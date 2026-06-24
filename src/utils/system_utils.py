@@ -26,21 +26,26 @@ def validate_user_data(data: dict) -> str | None:
         "name_client": [
             (r'^.{2,100}$', "Client name must be between 2 and 100 characters.")
         ],
-        "problem": [
-            (r'^.{10,500}$', "Problem must be between 10 and 500 characters.")
+        "business": [
+            (r'^.{10,500}$', "Business must be between 10 and 500 characters.")
         ],
         "target_audience": [
-            (r'^.{5,300}$', "Target audience must be between 5 and 300 characters.")
+            (r'^.{10,500}$', "Target audience must be between 10 and 500 characters.")
         ],
-        "goal": [
-            (r'^.{10,300}$', "Goal must be between 10 and 300 characters.")
+        "objective": [
+            (r'^.{10,500}$', "Objective must be between 10 and 500 characters.")
         ],
-        "requirements": [
-            (r'^.{10,500}$', "Requirements must be between 10 and 500 characters.")
+        "differential": [
+            (r'^.{10,500}$', "Differential must be between 10 and 500 characters.")
         ],
-
-        "constraints": [
-            (r'^.{5,300}$', "Constraints must be between 5 and 300 characters.")
+        "personality": [
+            (r'^.{10,500}$', "Personality must be between 10 and 500 characters.")
+        ],
+        "questions_personalized": [
+            (r'^.{10,500}$', "Questions personalized must be between 10 and 500 characters.")
+        ],
+        "token": [
+            (r'^[a-f0-9]{12}$', "Token must be a valid 12-character hexadecimal string.")
         ]
     }
 
