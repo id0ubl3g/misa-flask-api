@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<body>
+
+<button id="login">
+    Login with Google
+</button>
+
+<script type="module">
+
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
+
+import {
+    getAuth,
+    GoogleAuthProvider,
+    signInWithPopup
+} from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
+
+const firebaseConfig = {
+
+    apiKey: "AIzaSyCHpSwK-2fi6nZB0akN2Qd4LWcjGldTOIY",
+
+    authDomain: "misa-flask-api-5a27a.firebaseapp.com",
+
+    projectId: "misa-flask-api-5a27a",
+
+    storageBucket: "misa-flask-api-5a27a.firebasestorage.app",
+
+    messagingSenderId: "1016544416953",
+
+    appId: "1:1016544416953:web:784b40aea0d4af10267768"
+};
+
+const app = initializeApp(firebaseConfig);
+
+const auth = getAuth(app);
+
+document.getElementById("login").onclick = async () => {
+
+    try {
+
+        const provider = new GoogleAuthProvider();
+
+        const result = await signInWithPopup(
+            auth,
+            provider
+        );
+
+        const token = await result.user.getIdToken();
+
+        console.log(
+            "Firebase Token:",
+            token
+        );
+
+        const response = await fetch(
+            "http://localhost:5000/misa/auth/google",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    token
+                })
+            }
+        );
+
+        const data = await response.json();
+
+        console.log(data);
+
+    } catch (error) {
+
+        console.error(error);
+
+    }
+
+};
+
+</script>
+
+</body>
+</html>

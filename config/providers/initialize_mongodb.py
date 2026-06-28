@@ -12,8 +12,13 @@ def initialize_mongodb():
     clients_collection = db["clients_collection"]
     clients_collection.create_index("email_client", unique=True)
 
+    users_collection = db["users_collection"]
+    users_collection.create_index("email", unique=True)
+    users_collection.create_index("uid", unique=True)
+
     return {
         "client": client,
         "db": db,
         "clients_collection": clients_collection,
+        "users_collection": users_collection
     }
