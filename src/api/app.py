@@ -1,4 +1,4 @@
-from src.modules.generative_ai import GenerativeAI
+from src.modules.vertex_ai import Vertex
 
 from config.model_questions_personalized import model_questions_personalized
 from config.model_initial_questions import model_initial_questions
@@ -196,7 +196,7 @@ class Server:
                 }
 
                 merged_prompt = f"{prompt_questions_personalized}{questions}"
-                response_generative_ai = GenerativeAI().start_chat(merged_prompt)
+                response_generative_ai = Vertex().start_chat(merged_prompt)
                 response_generative_ai_json = parse_ai_json(response_generative_ai['data'])
 
                 self.clients_collection.update_one(
@@ -295,7 +295,7 @@ class Server:
                     }
 
                 merged_prompt = f"{prompt_generate_briefing}{initial_questions}{data_context_questions}{data_refinement_questions}"
-                response_generative_ai = GenerativeAI().start_chat(merged_prompt)
+                response_generative_ai = Vertex().start_chat(merged_prompt)
                 response_generative_ai_json = parse_ai_json(response_generative_ai['data'])
 
                 self.clients_collection.update_one(
@@ -383,6 +383,33 @@ class Server:
                     "message": "Client response retrieved successfully.",
                     "response": client_response
                 }), 200
+
+            except Exception:
+                return self.create_error_response('An error occurred while processing the request', 500)
+
+        @self.app.route('/misa/delete_client_response/<string:token>', methods=['DELETE'])
+        @jwt_required()
+        def misa_delete_client_response_by_token(token: str) -> Response:
+            try:
+                current_user = self.user_or_ip()
+
+                if not current_user:
+                    return self.create_error_response("You are not authorized to access this resource", 401)
+
+                current_info_user = self.get_user(current_user)
+
+                if not current_info_user:
+                    return self.create_error_response("User not found", 404)
+
+                result = self.clients_collection.delete_one({
+                    "designer_uid": current_info_user['uid'],
+                    "token": token
+                })
+
+                if result.deleted_count == 0:
+                    return self.create_error_response("Client response not found", 404)
+
+                return jsonify({"message": "Client response deleted successfully",}), 200
 
             except Exception:
                 return self.create_error_response('An error occurred while processing the request', 500)
