@@ -46,6 +46,21 @@ def validate_user_data(data: dict) -> str | None:
         ],
         "token": [
             (r'^[a-f0-9]{12}$', "Token must be a valid 12-character hexadecimal string.")
+        ],
+        "success_url": [
+            (r'^https://', "Success URL must start with https://"),
+            (r'^.{1,2083}$', "Success URL must be between 1 and 2083 characters long"),
+            (r'^https://([\w\-]+\.)+[\w\-]+(/[\w\-./?%&=]*)?$', "Success URL format is invalid")
+        ],
+        "failure_url": [
+            (r'^https://', "Failure URL must start with https://"),
+            (r'^.{1,2083}$', "Failure URL must be between 1 and 2083 characters long"),
+            (r'^https://([\w\-]+\.)+[\w\-]+(/[\w\-./?%&=]*)?$', "Failure URL format is invalid")
+        ],
+        "pending_url": [
+            (r'^https://', "Pending URL must start with https://"),
+            (r'^.{1,2083}$', "Pending URL must be between 1 and 2083 characters long"),
+            (r'^https://([\w\-]+\.)+[\w\-]+(/[\w\-./?%&=]*)?$', "Pending URL format is invalid")
         ]
     }
 
