@@ -524,6 +524,7 @@ class Server:
                 uid = decoded_token["uid"]
                 email = decoded_token["email"]
                 name = decoded_token.get("name")
+                picture = decoded_token.get("picture")
 
                 user = self.users_collection.find_one({"uid": uid})
 
@@ -535,6 +536,7 @@ class Server:
                         "uid": uid,
                         "email": email,
                         "name": name,
+                        "picture": picture,
                         "is_free": True,
                         "created_at": datetime.now(timezone.utc)
                     })
@@ -557,7 +559,8 @@ class Server:
                     "refresh_token": refresh_token,
                     "user": {
                         "email": email,
-                        "name": name
+                        "name": name,
+                        "picture": picture
                     }
                 }), 200
 
@@ -586,10 +589,48 @@ class Server:
             except Exception:
                 return self.create_error_response('An error occurred while processing the request', 500)
 
+        @self.app.route('/misa/metrics', methods=['GET'])
+        @jwt_required()
+        @self.limiter.limit("20 per minute")
+        def misa_metrics() -> Response:
+            try:    
+                current_user = self.user_or_ip()
+                
+                response_check_and_apply_block = self.check_and_apply_block(current_user, increment=False)
+                if response_check_and_apply_block:
+                    return response_check_and_apply_block
+                
+                if not current_user:
+                    return self.create_error_response("You are not authorized to access this resource", 401)
+
+                current_info_user = self.get_user(current_user)
+                
+                if not current_info_user:
+                    return self.create_error_response("User not found", 404)
+
+                designer_uid = current_info_user['uid']
+
+                clients = self.clients_collection.count_documents({
+                    "designer_uid": designer_uid
+                })
+                briefing = self.clients_collection.count_documents({
+                    "designer_uid": designer_uid,
+                    "briefing": True
+                })
+                pending = self.clients_collection.count_documents({
+                    "designer_uid": designer_uid,
+                    "briefing": False
+                })
+
+                return jsonify({"clients": clients, "briefing": briefing, "pending": pending}), 200
+
+            except Exception:
+                return self.create_error_response('An error occurred while processing the request.', 500)
+
         @self.app.route('/misa/checkout', methods=['POST'])
         @jwt_required()
         @self.limiter.limit("10 per minute")
-        def lectify_checkout() -> Response:
+        def misa_checkout() -> Response:
             try:
                 current_user = self.user_or_ip()
                 
