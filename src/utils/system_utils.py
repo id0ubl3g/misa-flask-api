@@ -21,28 +21,36 @@ def is_valid_email(email: str) -> bool:
 def validate_user_data(data: dict) -> str | None:
     validators = {
         "name_project": [
-            (r'^.{3,100}$', "Project name must be between 3 and 100 characters.")
+            (r'^[A-Za-z0-9À-ÿ ]{3,100}$',
+            "Project name must be between 3 and 100 characters and contain only letters and numbers.")
         ],
         "name_client": [
-            (r'^.{2,100}$', "Client name must be between 2 and 100 characters.")
+            (r'^[A-Za-z0-9À-ÿ ]{2,100}$',
+            "Client name must be between 2 and 100 characters and contain only letters and numbers.")
         ],
         "business": [
-            (r'^.{10,500}$', "Business must be between 10 and 500 characters.")
+            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            "Business must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "target_audience": [
-            (r'^.{10,500}$', "Target audience must be between 10 and 500 characters.")
+            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            "Target audience must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "objective": [
-            (r'^.{10,500}$', "Objective must be between 10 and 500 characters.")
+            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            "Objective must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "differential": [
-            (r'^.{10,500}$', "Differential must be between 10 and 500 characters.")
+            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            "Differential must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "personality": [
-            (r'^.{10,500}$', "Personality must be between 10 and 500 characters.")
+            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            "Personality must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "questions_personalized": [
-            (r'^.{10,500}$', "Questions personalized must be between 10 and 500 characters.")
+            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            "Questions personalized must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "token": [
             (r'^[a-f0-9]{12}$', "Token must be a valid 12-character hexadecimal string.")

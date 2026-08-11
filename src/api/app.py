@@ -187,6 +187,15 @@ class Server:
                 if not name_project or not name_client or not email_client:
                     return self.create_error_response(f'Missing required fields: {", ".join(["name_project", "name_client", "email_client"])}', 400)
 
+                if not isinstance(name_project, str):
+                    return {"error": "Name project must be a string"}, 400
+
+                if not isinstance(name_client, str):
+                    return {"error": "Name client must be a string"}, 400
+                    
+                if not isinstance(email_client, str):
+                    return {"error": "Email client must be a string"}, 400
+
                 if not is_valid_email(email_client):
                     return self.create_error_response('Invalid email format', 400)
 
@@ -236,8 +245,11 @@ class Server:
                 data = request.get_json()
 
                 initial_questions = data.get('model_initial_questions')
+
+                if initial_questions is not None and not isinstance(initial_questions, bool):
+                    return {"error": "Initial questions must be a boolean"}, 400
                 
-                if initial_questions == 'True':
+                if initial_questions is True:
                     return jsonify(model_initial_questions), 200
 
                 business = data.get('business')
@@ -248,6 +260,18 @@ class Server:
 
                 if not business or not target_audience or not objective or not differential or not personality:
                     return self.create_error_response(f'Missing required fields: {", ".join(["business", "target_audience", "objective", "differential", "personality"])}', 400)
+
+                fields = {
+                    "business": business,
+                    "target_audience": target_audience,
+                    "objective": objective,
+                    "differential": differential,
+                    "personality": personality
+                }
+
+                for field, value in fields.items():
+                    if not isinstance(value, str):
+                        return {"error": f"{field.replace('_', ' ').capitalize()} must be a string"}, 400
 
                 validation_error = validate_user_data({
                     "token": token,
@@ -312,7 +336,6 @@ class Server:
                     "message": "Brand briefing received successfully. Personalized follow-up questions generated.",
                     "questions": response_generative_ai_json,
                     "token": token
-
                 }), 201
 
             except Exception:
@@ -326,18 +349,20 @@ class Server:
 
                 questions_personalized = data.get('model_questions_personalized')
 
-                if questions_personalized == 'True':
+                if questions_personalized is not None and not isinstance(questions_personalized, bool):
+                    return {"error": "Initial personalized must be a boolean"}, 400
+                
+                if questions_personalized is True:
                     return jsonify(model_questions_personalized), 200
 
                 current_info_client = self.clients_collection.find_one({'token': token})
                 if not current_info_client:
                     return self.create_error_response('Client not found.', 404)
 
-                client_exists = self.clients_collection.find_one({'token': token})
-                if not client_exists.get('initial_questions_completed'):
+                if not current_info_client.get('initial_questions_completed'):
                     return self.create_error_response('Initial questions have not been completed yet.', 400)
-                
-                if client_exists.get('questions_personalized_completed'):
+
+                if current_info_client.get('questions_personalized_completed'):
                     return self.create_error_response('Questions personalized have already been completed.', 400)
 
                 context_questions = data.get('context_questions', {})
@@ -345,7 +370,7 @@ class Server:
 
                 if not context_questions or not refinement_questions:
                     return self.create_error_response(f'Missing required fields: {", ".join(["context_questions", "refinement_questions"])}', 400)
-
+                
                 if len(context_questions) != 5:
                     return self.create_error_response('Context questions must contain exactly 5 answers.', 400)
 
@@ -363,6 +388,9 @@ class Server:
                     question = _context_questions.get(f'question {i}')
                     answer = context_questions.get(f'question {i}')
 
+                    if not isinstance(answer, str):
+                        return {"error": "Question answer must be a string"}, 400
+
                     validation_error = validate_user_data({
                         "questions_personalized": answer
                     })
@@ -378,6 +406,9 @@ class Server:
                 for i in range(1, 6):
                     question = _refinement_questions.get(f'question {i}')
                     answer = refinement_questions.get(f'question {i}')
+
+                    if not isinstance(answer, str):
+                        return {"error": "Question answer must be a string"}, 400
 
                     validation_error = validate_user_data({
                         "questions_personalized": answer,
@@ -548,7 +579,8 @@ class Server:
                         "refresh_token": refresh_token,
                         "user": {
                             "email": email,
-                            "name": name
+                            "name": name,
+                            "picture": picture
                         }
                     }), 201
 
@@ -588,6 +620,31 @@ class Server:
             
             except Exception:
                 return self.create_error_response('An error occurred while processing the request', 500)
+
+        @self.app.route('/misa/profile', methods=['GET'])
+        @jwt_required()
+        @self.limiter.limit("20 per minute")
+        def misa_profile() -> Response:
+            try:
+                current_user = self.user_or_ip()
+                
+                response_check_and_apply_block = self.check_and_apply_block(current_user, increment=False)
+                if response_check_and_apply_block:
+                    return response_check_and_apply_block
+                
+                if not current_user:
+                    return self.create_error_response("You are not authorized to access this resource", 401)
+
+                current_info_user = self.get_user(current_user)
+                current_info_user["_id"] = str(current_info_user["_id"])
+                
+                if not current_info_user:
+                    return self.create_error_response("User not found", 404)
+
+                return jsonify(current_info_user), 200
+
+            except Exception:
+                return self.create_error_response('An error occurred while processing the request.', 500)
 
         @self.app.route('/misa/metrics', methods=['GET'])
         @jwt_required()
@@ -650,17 +707,34 @@ class Server:
                     return self.create_error_response("User already has a paid plan", 400)
             
                 data = request.get_json()
-                plan = data.get("plan", "").strip().lower()
-                success_url = data.get("success_url" , "").strip()
-                failure_url = data.get("failure_url", "").strip()
-                pending_url = data.get("pending_url", "").strip()
+                plan = data.get("plan", "")
+                success_url = data.get("success_url" , "")
+                failure_url = data.get("failure_url", "")
+                pending_url = data.get("pending_url", "")
 
                 if not plan or plan not in self.plans:
                     return self.create_error_response("Plan is required", 400)
                 
                 if not success_url or not failure_url or not pending_url:
                     return self.create_error_response("Success, failure and pending URLs are required", 400)
-                
+
+                if not isinstance(plan, str):
+                    return {"error": "Plan must be a string"}, 400
+
+                if not isinstance(success_url, str):
+                    return {"error": "Success URL must be a string"}, 400
+
+                if not isinstance(failure_url, str):
+                    return {"error": "Failure URL must be a string"}, 400
+
+                if not isinstance(pending_url, str):
+                    return {"error": "Pending URL must be a string"}, 400
+
+                plan = plan.strip().lower()
+                success_url = success_url.strip()
+                failure_url = failure_url.strip()
+                pending_url = pending_url.strip()
+
                 validation_error = validate_user_data({
                     "success_url": success_url,
                     "failure_url": failure_url,
