@@ -3,6 +3,7 @@ from src.modules.vertex_ai import Vertex
 from config.model_questions_personalized import model_questions_personalized
 from config.model_initial_questions import model_initial_questions
 from config.prompt_config import prompt_questions_personalized, prompt_generate_briefing
+from config.input_config import *
 
 from config.providers.initialize_mongodb import initialize_mongodb
 from config.providers.initialize_firebase import initialize_firebase
@@ -34,6 +35,7 @@ class Server:
         self.app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
         self.app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
         self.app.config['RATELIMIT_STORAGE_URI'] = os.getenv("REDIS_URL")
+        self.app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
 
         self.jwt: JWTManager = JWTManager(self.app)
 
@@ -180,12 +182,20 @@ class Server:
 
                 data = request.get_json()
 
+                if not isinstance(data, dict):
+                    return create_error_response("Request body must be a JSON object", 400)
+
+                if not data:
+                    return self.create_error_response('No data provided', 400)
+
+                unknown_fields = set(data.keys()) - ALLOWED_FIELDS
+
+                if unknown_fields:
+                    return create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
+
                 name_project = data.get('name_project')
                 name_client = data.get('name_client')
                 email_client = data.get('email_client')
-
-                if not name_project or not name_client or not email_client:
-                    return self.create_error_response(f'Missing required fields: {", ".join(["name_project", "name_client", "email_client"])}', 400)
 
                 if not isinstance(name_project, str):
                     return {"error": "Name project must be a string"}, 400
@@ -195,6 +205,9 @@ class Server:
                     
                 if not isinstance(email_client, str):
                     return {"error": "Email client must be a string"}, 400
+
+                if not name_project or not name_client or not email_client:
+                    return self.create_error_response(f'Missing required fields: {", ".join(["name_project", "name_client", "email_client"])}', 400)
 
                 if not is_valid_email(email_client):
                     return self.create_error_response('Invalid email format', 400)
@@ -243,6 +256,17 @@ class Server:
         def misa_briefing_ping_client_response(token: str) -> Response:
             try:
                 data = request.get_json()
+
+                if not isinstance(data, dict):
+                    return create_error_response("Request body must be a JSON object", 400)
+
+                if not data:
+                    return self.create_error_response('No data provided', 400)
+
+                unknown_fields = set(data.keys()) - ALLOWED_FIELDS
+
+                if unknown_fields:
+                    return create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
 
                 initial_questions = data.get('model_initial_questions')
 
@@ -347,6 +371,17 @@ class Server:
             try:
                 data = request.get_json()
 
+                if not isinstance(data, dict):
+                    return create_error_response("Request body must be a JSON object", 400)
+
+                if not data:
+                    return self.create_error_response('No data provided', 400)
+
+                unknown_fields = set(data.keys()) - ALLOWED_FIELDS
+
+                if unknown_fields:
+                    return create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
+
                 questions_personalized = data.get('model_questions_personalized')
 
                 if questions_personalized is not None and not isinstance(questions_personalized, bool):
@@ -365,8 +400,20 @@ class Server:
                 if current_info_client.get('questions_personalized_completed'):
                     return self.create_error_response('Questions personalized have already been completed.', 400)
 
-                context_questions = data.get('context_questions', {})
-                refinement_questions = data.get('refinement_questions', {})
+                context_questions = data.get('context_questions')
+                refinement_questions = data.get('refinement_questions')
+
+                if context_questions is None:
+                    return self.create_error_response("Missing required field: context_questions", 400)
+
+                if refinement_questions is None:
+                    return self.create_error_response("Missing required field: refinement_questions", 400)
+
+                if not isinstance(context_questions, dict):
+                    return self.create_error_response("context_questions must be an object", 400)
+
+                if not isinstance(refinement_questions, dict):
+                    return self.create_error_response("refinement_questions must be an object", 400)
 
                 if not context_questions or not refinement_questions:
                     return self.create_error_response(f'Missing required fields: {", ".join(["context_questions", "refinement_questions"])}', 400)
@@ -707,33 +754,45 @@ class Server:
                     return self.create_error_response("User already has a paid plan", 400)
             
                 data = request.get_json()
-                plan = data.get("plan", "")
-                success_url = data.get("success_url" , "")
-                failure_url = data.get("failure_url", "")
-                pending_url = data.get("pending_url", "")
+
+                if not isinstance(data, dict):
+                    return create_error_response("Request body must be a JSON object", 400)
+
+                if not data:
+                    return self.create_error_response('No data provided', 400)
+
+                unknown_fields = set(data.keys()) - ALLOWED_FIELDS
+
+                if unknown_fields:
+                    return create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
+
+                plan = data.get("plan")
+                success_url = data.get("success_url")
+                failure_url = data.get("failure_url")
+                pending_url = data.get("pending_url")
+
+                fields = {
+                    "plan": plan,
+                    "success_url": success_url,
+                    "failure_url": failure_url,
+                    "pending_url": pending_url
+                }
+
+                for field, value in fields.items():
+                    if not isinstance(value, str):
+                        return self.create_error_response(
+                            f"{field} must be a string", 400)
+
+                plan = fields["plan"].strip().lower()
+                success_url = fields["success_url"].strip()
+                failure_url = fields["failure_url"].strip()
+                pending_url = fields["pending_url"].strip()
 
                 if not plan or plan not in self.plans:
                     return self.create_error_response("Plan is required", 400)
                 
                 if not success_url or not failure_url or not pending_url:
                     return self.create_error_response("Success, failure and pending URLs are required", 400)
-
-                if not isinstance(plan, str):
-                    return {"error": "Plan must be a string"}, 400
-
-                if not isinstance(success_url, str):
-                    return {"error": "Success URL must be a string"}, 400
-
-                if not isinstance(failure_url, str):
-                    return {"error": "Failure URL must be a string"}, 400
-
-                if not isinstance(pending_url, str):
-                    return {"error": "Pending URL must be a string"}, 400
-
-                plan = plan.strip().lower()
-                success_url = success_url.strip()
-                failure_url = failure_url.strip()
-                pending_url = pending_url.strip()
 
                 validation_error = validate_user_data({
                     "success_url": success_url,
@@ -743,7 +802,7 @@ class Server:
 
                 if validation_error:
                     return self.create_error_response(validation_error, 400)
-                
+
                 selected_plan = self.plans.get(plan)
                 price = selected_plan['price']
                 email = current_info_user['email']

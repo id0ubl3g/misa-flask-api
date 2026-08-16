@@ -1,0 +1,19 @@
+ALLOWED_FIELDS = {
+    "name_project",
+    "name_client",
+    "email_client",
+    "model_initial_questions",
+    "business",
+    "target_audience",
+    "objective",
+    "differential",
+    "personality",
+    "model_questions_personalized",
+    "context_questions",
+    "refinement_questions",
+    "plan",
+    "success_url",
+    "failure_url",
+    "pending_url",
+    "token"
+}

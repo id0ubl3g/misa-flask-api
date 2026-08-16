@@ -180,6 +180,13 @@ docker compose ps
 
 ### Core Endpoints
 
+#### Misa Create Client
+
+- **URL**: `/misa/briefing/create_client`
+- **Method**: `POST`
+- **Description**: Creates a client and initializes a brand briefing.
+- **Security**: Requires JWT Bearer token in Authorization header.
+
 ##### Request Body Create Client
 
 * **Content-Type**: `application/json`
