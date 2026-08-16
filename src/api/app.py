@@ -220,9 +220,9 @@ class Server:
                     return self.create_error_response('A client with this email already exists.', 400)
 
                 validation_error = validate_user_data({
-                        "name_project": name_project,
-                        "name_client": name_client,
-                    })
+                    "name_project": name_project,
+                    "name_client": name_client,
+                })
 
                 if validation_error:
                     return self.create_error_response(validation_error, 400)
@@ -250,7 +250,99 @@ class Server:
                 
             except Exception:
                 return self.create_error_response('An error occurred while processing the request', 500)
-                
+        
+        @self.app.route('/misa/briefing/update_client/<string:token>', methods=['PATCH'])
+        @jwt_required()
+        @self.limiter.limit("10 per minute")
+        def misa_briefing_update_client(token: str) -> Response:
+            try:
+                current_user = self.user_or_ip()
+
+                if not current_user:
+                    return self.create_error_response("You are not authorized to access this resource", 401)
+
+                current_info_user = self.get_user(current_user)
+
+                if not current_info_user:
+                    return self.create_error_response("User not found", 404)
+
+                data = request.get_json()
+
+                if not isinstance(data, dict):
+                    return self.create_error_response("Request body must be a JSON object", 400)
+
+                if not data:
+                    return self.create_error_response("No data provided", 400)
+
+                unknown_fields = set(data.keys()) - ALLOWED_FIELDS
+
+                if unknown_fields:
+                    return self.create_error_response(f"Disallowed fields found: {', '.join(sorted(unknown_fields))}", 400)
+
+                current_client = self.clients_collection.find_one({"token": token})
+
+                if not current_client:
+                    return self.create_error_response("Client not found", 404)
+
+                update_data = {}
+
+                for field, value in data.items():
+                    if not isinstance(value, str):
+                        return self.create_error_response(f"{field} must be a string", 400)
+
+                    value = value.strip()
+
+                    if not value:
+                        return self.create_error_response(f"{field} cannot be empty", 400)
+
+                    update_data[field] = value
+
+                if "email_client" in update_data:
+                    email_client = update_data["email_client"].lower()
+
+                    if not is_valid_email(email_client):
+                        return self.create_error_response("Invalid email format", 400)
+
+                    update_data["email_client"] = email_client
+
+                if "name_project" in update_data or "name_client" in update_data:
+                    validation_data = {}
+
+                    if "name_project" in update_data:
+                        validation_data["name_project"] = update_data["name_project"]
+
+                    if "name_client" in update_data:
+                        validation_data["name_client"] = update_data["name_client"]
+
+                    validation_error = validate_user_data(validation_data)
+
+                    if validation_error:
+                        return self.create_error_response(validation_error, 400)
+
+                if not update_data:
+                    return self.create_error_response("No fields to update", 400)
+
+                result = self.clients_collection.update_one({
+                    "token": token, 
+                    "designer_uid": current_user
+                    }, 
+                        {
+                            "$set": update_data
+                        }
+                    )
+
+                if result.matched_count == 0:
+                    return self.create_error_response("Client not found", 404)
+
+                return jsonify({
+                    "message": "Client updated successfully",
+                    "updated_fields": list(update_data.keys()),
+                    "modified": result.modified_count > 0
+                }), 200
+
+            except Exception:
+                return self.create_error_response("An error occurred while processing the request", 500)
+
         @self.app.route('/misa/briefing/ping_client_response/<string:token>', methods=['POST'])
         @self.limiter.limit("5 per minute")
         def misa_briefing_ping_client_response(token: str) -> Response:
