@@ -124,19 +124,27 @@ Configure the required environment variables in `.env`, including:
 
 Sensitive credentials should not be committed to the repository.
 
-To enable the Vertex and Firebase feature, it is required to configure the Google Cloud service account JSON file.
+To enable the Vertex AI and Firebase features, configure the Google Cloud service account credentials through the `.env` file.
 
-Place the file inside the config/ directory:
+The Google credentials JSON file is now generated dynamically when the application starts, so you do not need to manually place `google_credentials.json` inside the `config/` directory.
 
-```plaintext
-config/google_credentials.json
+Add the required Google service account information to your `.env` file using the following environment variables:
+
+```env
+GOOGLE_TYPE=
+GOOGLE_PROJECT_ID=
+GOOGLE_PRIVATE_KEY_ID=
+GOOGLE_PRIVATE_KEY=
+GOOGLE_CLIENT_EMAIL=
+GOOGLE_CLIENT_ID=
+GOOGLE_AUTH_URI=
+GOOGLE_TOKEN_URI=
+GOOGLE_AUTH_PROVIDER_X509_CERT_URL=
+GOOGLE_CLIENT_X509_CERT_URL=
+GOOGLE_UNIVERSE_DOMAIN=
 ```
 
-Then set the environment variable pointing to this file:
-
-```sh
-path_google_application_credentials_json=config/google_credentials.json
-```
+The application will use these environment variables to dynamically generate the Google credentials file during startup.
 
 ## Running the Application
 
