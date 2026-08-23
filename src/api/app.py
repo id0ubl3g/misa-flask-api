@@ -16,6 +16,7 @@ from flask_jwt_extended import JWTManager, create_access_token, create_refresh_t
 from flask import Flask, request, jsonify, Response
 from datetime import datetime, timezone, timedelta
 from flask_limiter.util import get_remote_address
+from pymongo.collection import Collection
 from firebase_admin import auth
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -164,6 +165,11 @@ class Server:
                     return self.create_error_response("Too many requests. Please try again later or upgrade your plan to continue using this feature.", 429)
 
             return self.create_error_response("Too many requests. Please try again later.", 429)
+
+        @self.app.route('/health', methods=['GET'])
+        @self.limiter.limit("50 per minute")
+        def health_check():
+            return jsonify({"status": "healthy"}), 200
         
         @self.app.route('/misa/briefing/create_client', methods=['POST'])
         @jwt_required()
@@ -183,7 +189,7 @@ class Server:
                 data = request.get_json()
 
                 if not isinstance(data, dict):
-                    return create_error_response("Request body must be a JSON object", 400)
+                    return self.create_error_response("Request body must be a JSON object", 400)
 
                 if not data:
                     return self.create_error_response('No data provided', 400)
@@ -191,7 +197,7 @@ class Server:
                 unknown_fields = set(data.keys()) - ALLOWED_FIELDS
 
                 if unknown_fields:
-                    return create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
+                    return self.create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
 
                 name_project = data.get('name_project')
                 name_client = data.get('name_client')
@@ -350,7 +356,7 @@ class Server:
                 data = request.get_json()
 
                 if not isinstance(data, dict):
-                    return create_error_response("Request body must be a JSON object", 400)
+                    return self.create_error_response("Request body must be a JSON object", 400)
 
                 if not data:
                     return self.create_error_response('No data provided', 400)
@@ -358,7 +364,7 @@ class Server:
                 unknown_fields = set(data.keys()) - ALLOWED_FIELDS
 
                 if unknown_fields:
-                    return create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
+                    return self.create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
 
                 initial_questions = data.get('model_initial_questions')
 
@@ -464,7 +470,7 @@ class Server:
                 data = request.get_json()
 
                 if not isinstance(data, dict):
-                    return create_error_response("Request body must be a JSON object", 400)
+                    return self.create_error_response("Request body must be a JSON object", 400)
 
                 if not data:
                     return self.create_error_response('No data provided', 400)
@@ -472,7 +478,7 @@ class Server:
                 unknown_fields = set(data.keys()) - ALLOWED_FIELDS
 
                 if unknown_fields:
-                    return create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
+                    return self.create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
 
                 questions_personalized = data.get('model_questions_personalized')
 
@@ -848,7 +854,7 @@ class Server:
                 data = request.get_json()
 
                 if not isinstance(data, dict):
-                    return create_error_response("Request body must be a JSON object", 400)
+                    return self.create_error_response("Request body must be a JSON object", 400)
 
                 if not data:
                     return self.create_error_response('No data provided', 400)
@@ -856,7 +862,7 @@ class Server:
                 unknown_fields = set(data.keys()) - ALLOWED_FIELDS
 
                 if unknown_fields:
-                    return create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
+                    return self.create_error_response(f"Disallowed fields found: {', '.join(unknown_fields)}", 400)
 
                 plan = data.get("plan")
                 success_url = data.get("success_url")
