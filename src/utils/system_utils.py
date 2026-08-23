@@ -112,7 +112,6 @@ def create_google_credentials() -> str:
         print('Error occurred while creating Google credentials')
         sys.exit(1)
 
-
     path = Path("config/misa-flask-api-501622-91fd8aef25fd.json")
 
     with path.open("w") as file:
