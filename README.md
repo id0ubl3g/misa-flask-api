@@ -45,7 +45,7 @@ The Misa Flask API is a web application developed with Flask, designed to genera
 * JWT-based authentication
 * Client management
 * MongoDB Atlas-based data persistence
-* Redis caching and rate limiting
+* Redis Cloud caching and rate limiting
 * Firebase authentication
 * Google authentication
 * Mercado Pago subscription integration
@@ -89,13 +89,13 @@ The Misa Flask API is a web application developed with Flask, designed to genera
 
 ## Prerequisites
 
-To run the Misa Flask API, use a Linux environment with Python 3.10 or higher. The environment must include Docker and Docker Compose for containerized services, as well as internet access for external services such as MongoDB Atlas, Firebase, Google Cloud, Mercado Pago, and generative AI services.
+To run the Misa Flask API, use a Linux environment with Python 3.10 or higher. The environment must include Docker and Docker Compose for containerized services, as well as internet access for external services such as Redis Cloud, MongoDB Atlas, Firebase, Google Cloud, Mercado Pago, and generative AI services.
 
 The application also requires:
 
 * Docker
 * Docker Compose
-* Redis
+* Redis Cloud connection
 * A MongoDB Atlas connection
 
 ### Install Docker
@@ -117,7 +117,7 @@ Configure the required environment variables in `.env`, including:
 * Flask secret keys
 * JWT configuration
 * MongoDB connection
-* Redis configuration
+* Redis Cloud configuration
 * Google Cloud credentials
 * Mercado Pago credentials
 * Application base URLs

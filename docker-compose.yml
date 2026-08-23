@@ -1,11 +1,4 @@
 services:
-  redis:
-    image: redis:7
-    container_name: redis
-    ports:
-      - "6379:6379"
-    restart: always
-
   misa-api:
     build: .
     container_name: misa-flask-api
@@ -13,6 +6,4 @@ services:
       - "5000:5000"
     env_file:
       - .env
-    depends_on:
-      - redis
     restart: always
