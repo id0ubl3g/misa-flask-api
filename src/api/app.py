@@ -3,6 +3,7 @@ from src.modules.vertex_ai import Vertex
 from config.model_questions_personalized import model_questions_personalized
 from config.model_initial_questions import model_initial_questions
 from config.prompt_config import prompt_questions_personalized, prompt_generate_briefing
+from config.limits_config import *
 from config.input_config import *
 
 from config.providers.initialize_mongodb import initialize_mongodb
@@ -71,31 +72,32 @@ class Server:
     def get_user(self, uid) -> dict | None:
         return self.users_collection.find_one({"uid": uid})
 
-    def user_is_free(self, username: str) -> bool:
-        current_user = self.get_user(username)
+    def user_is_free(self, uid: str) -> bool:
+        current_user = self.get_user(uid)
 
         if not current_user:
             return True
 
         subscription_end = current_user.get("subscription_end")
+        has_active_subscription = False
 
-        has_active_subscription = (
-            subscription_end is not None
-            and datetime.now(timezone.utc) < subscription_end
-        )
+        if isinstance(subscription_end, datetime):
+            if subscription_end.tzinfo is None:
+                subscription_end = subscription_end.replace(tzinfo=timezone.utc)
+                
+            has_active_subscription = datetime.now(timezone.utc) < subscription_end
 
         if has_active_subscription:
             if current_user.get("is_free", True):
                 self.users_collection.update_one(
-                    {"username": username},
+                    {"uid": uid},
                     {"$set": {"is_free": False}}
                 )
-
             return False
 
         if not current_user.get("is_free", True):
             self.users_collection.update_one(
-                {"username": username},
+                {"uid": uid},
                 {"$set": {"is_free": True}}
             )
 
@@ -154,51 +156,24 @@ class Server:
         if not current_user:
             return "0 per month"
 
-        current_info_user = self.get_user(current_user)
-        if not current_info_user:
-            return "0 per month"
-            
-        plan = current_info_user.get("plan")
-        subscription_end = current_info_user.get("subscription_end")
-        is_free = current_info_user.get("is_free", True)
-
-        is_active = not is_free
-        if subscription_end and isinstance(subscription_end, datetime):
-            is_active = subscription_end > datetime.now(timezone.utc)
-
-        if is_active and plan:
-            if plan == "1_month":
-                return "25 per month; 5 per minute"
-            elif plan == "6_months":
-                return "50 per month; 5 per minute"
-            elif plan == "1_year":
-                return "150 per month; 5 per minute"
+        if not self.user_is_free(current_user):
+            user_info = self.get_user(current_user) or {}
+            plan = user_info.get("plan")
+            return PLAN_LIMITS.get(plan, "0 per month")
 
         return "0 per month"
 
-    def check_client_limit(self, uid: str, user_info: dict) -> tuple[bool, int, int]:
-        LIMITS = {
-            "1_month": 25,
-            "6_months": 50,
-            "1_year": 150
-        }
-
+    def check_client_limit_storage(self, uid: str, user_info: dict) -> tuple[bool, int, int]:
+        is_active = not self.user_is_free(uid)
         plan = user_info.get("plan")
-        is_free = user_info.get("is_free", True)
-        subscription_end = user_info.get("subscription_end")
 
-        is_active = not is_free
-        if subscription_end and isinstance(subscription_end, datetime):
-            is_active = subscription_end > datetime.now(timezone.utc)
-
-        max_limit = LIMITS.get(plan, 0) if is_active else 0
-
+        max_limit = STORAGE_LIMITS.get(plan, 0) if is_active else 0
         current_count = self.clients_collection.count_documents({
             "designer_uid": uid
         })
 
         return current_count < max_limit, current_count, max_limit
-                
+
     def _register_routes(self) -> None:
         @self.app.errorhandler(429)
         def ratelimit_error(e) -> Response:
@@ -236,7 +211,7 @@ class Server:
                 if not current_info_user:
                     return self.create_error_response("User not found", 404)
 
-                allowed, current_count, max_limit = self.check_client_limit(current_info_user.get('uid'), current_info_user)
+                allowed, current_count, max_limit = self.check_client_limit_storage(current_info_user.get('uid'), current_info_user)
 
                 if not allowed:
                     return self.create_error_response(f"Client creation blocked. Limit reached ({current_count}/{max_limit}).", 403)
