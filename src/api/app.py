@@ -110,8 +110,10 @@ class Server:
             
         except Exception:
             endpoint = request.endpoint
-            endpoints_require = ['misa_briefing_create_client', 'misa_getall_client_responses', 
-                                'misa_get_client_response_by_token', 'misa_refresh_token']
+            endpoints_require = ['misa_briefing_create_client', 'misa_briefing_update_client',
+                                'misa_getall_client_responses', 'misa_get_client_response_by_token',
+                                'misa_delete_client_response_by_token', 'misa_profile', 
+                                'misa_metrics', 'misa_refresh_token']
 
             if endpoint not in (endpoints_require):
                 return get_remote_address()
@@ -146,11 +148,61 @@ class Server:
             return self.create_error_response("You have been temporarily blocked due to repeated rate limit violations.", 403)
         
         return None
+
+    def get_dynamic_limit(self) -> str:
+        current_user = get_jwt_identity()
+        if not current_user:
+            return "0 per month"
+
+        current_info_user = self.get_user(current_user)
+        if not current_info_user:
+            return "0 per month"
+            
+        plan = current_info_user.get("plan")
+        subscription_end = current_info_user.get("subscription_end")
+        is_free = current_info_user.get("is_free", True)
+
+        is_active = not is_free
+        if subscription_end and isinstance(subscription_end, datetime):
+            is_active = subscription_end > datetime.now(timezone.utc)
+
+        if is_active and plan:
+            if plan == "1_month":
+                return "25 per month; 5 per minute"
+            elif plan == "6_months":
+                return "50 per month; 5 per minute"
+            elif plan == "1_year":
+                return "150 per month; 5 per minute"
+
+        return "0 per month"
+
+    def check_client_limit(self, uid: str, user_info: dict) -> tuple[bool, int, int]:
+        LIMITS = {
+            "1_month": 25,
+            "6_months": 50,
+            "1_year": 150
+        }
+
+        plan = user_info.get("plan")
+        is_free = user_info.get("is_free", True)
+        subscription_end = user_info.get("subscription_end")
+
+        is_active = not is_free
+        if subscription_end and isinstance(subscription_end, datetime):
+            is_active = subscription_end > datetime.now(timezone.utc)
+
+        max_limit = LIMITS.get(plan, 0) if is_active else 0
+
+        current_count = self.clients_collection.count_documents({
+            "designer_uid": uid
+        })
+
+        return current_count < max_limit, current_count, max_limit
                 
     def _register_routes(self) -> None:
         @self.app.errorhandler(429)
         def ratelimit_error(e) -> Response:
-            current_user = self.user_or_ip()
+            current_user = get_jwt_identity()
             response_check_and_apply_block = self.check_and_apply_block(current_user)
 
             if response_check_and_apply_block:
@@ -158,9 +210,7 @@ class Server:
 
             endpoint = request.endpoint
 
-            if endpoint in ("misa_briefing_create_client", "misa_briefing_create_client", 
-                            "misa_getall_client_responses", "misa_get_client_response_by_token",
-                            "misa_delete_client_response_by_token"):
+            if endpoint == "misa_briefing_create_client":
                 if self.user_is_free(current_user):
                     return self.create_error_response("Too many requests. Please try again later or upgrade your plan to continue using this feature.", 429)
 
@@ -173,7 +223,7 @@ class Server:
         
         @self.app.route('/misa/briefing/create_client', methods=['POST'])
         @jwt_required()
-        @self.limiter.limit("5 per minute")
+        @self.limiter.limit(self.get_dynamic_limit)
         def misa_briefing_create_client() -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -185,6 +235,11 @@ class Server:
 
                 if not current_info_user:
                     return self.create_error_response("User not found", 404)
+
+                allowed, current_count, max_limit = self.check_client_limit(current_info_user.get('uid'), current_info_user)
+
+                if not allowed:
+                    return self.create_error_response(f"Client creation blocked. Limit reached ({current_count}/{max_limit}).", 403)
 
                 data = request.get_json()
 
@@ -204,13 +259,13 @@ class Server:
                 email_client = data.get('email_client')
 
                 if not isinstance(name_project, str):
-                    return {"error": "Name project must be a string"}, 400
+                    return self.create_error_response("Name project must be a string", 400)
 
                 if not isinstance(name_client, str):
-                    return {"error": "Name client must be a string"}, 400
-                    
+                    return self.create_error_response("Name client must be a string", 400)
+
                 if not isinstance(email_client, str):
-                    return {"error": "Email client must be a string"}, 400
+                    return self.create_error_response("Email client must be a string", 400)
 
                 if not name_project or not name_client or not email_client:
                     return self.create_error_response(f'Missing required fields: {", ".join(["name_project", "name_client", "email_client"])}', 400)
@@ -252,6 +307,11 @@ class Server:
                 return jsonify({
                     "message": "Client created successfully. Ready to start the brand briefing.",
                     "token": client_data["token"],
+                    "usage": {
+                        "current_count": current_count + 1,
+                        "max_limit": max_limit,
+                        "remaining": max_limit - (current_count + 1)
+                    }
                 }), 201
                 
             except Exception:
