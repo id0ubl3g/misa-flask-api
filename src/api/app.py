@@ -9,7 +9,7 @@ from config.input_config import *
 from config.providers.initialize_mongodb import initialize_mongodb
 from config.providers.initialize_firebase import initialize_firebase
 from config.providers.initialize_redis  import initialize_redis
-from config.providers.initialize_mercadopago import initialize_mercadopago
+from config.providers.initialize_mercadopago import initialize_mercadopago, REVOKING_STATUSES
 
 from src.utils.system_utils import parse_ai_json, validate_user_data, is_valid_email
 
@@ -704,7 +704,7 @@ class Server:
 
         @self.app.route('/misa/getall_client_responses', methods=['GET'])
         @jwt_required()
-        @self.limiter.limit("10 per minute")
+        @self.limiter.limit("200 per minute")
         def misa_getall_client_responses() -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -747,7 +747,7 @@ class Server:
 
         @self.app.route('/misa/get_client_response/<string:token>', methods=['GET'])
         @jwt_required()
-        @self.limiter.limit("10 per minute")
+        @self.limiter.limit("200 per minute")
         def misa_get_client_response_by_token(token: str) -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -780,7 +780,7 @@ class Server:
 
         @self.app.route('/misa/delete_client_response/<string:token>', methods=['DELETE'])
         @jwt_required()
-        @self.limiter.limit("5 per minute")
+        @self.limiter.limit("200 per minute")
         def misa_delete_client_response_by_token(token: str) -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -884,7 +884,7 @@ class Server:
 
         @self.app.route('/misa/profile', methods=['GET'])
         @jwt_required()
-        @self.limiter.limit("20 per minute")
+        @self.limiter.limit("200 per minute")
         def misa_profile() -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -925,7 +925,7 @@ class Server:
 
         @self.app.route('/misa/metrics', methods=['GET'])
         @jwt_required()
-        @self.limiter.limit("20 per minute")
+        @self.limiter.limit("200 per minute")
         def misa_metrics() -> Response:
             try:    
                 current_user = self.user_or_ip()
@@ -1137,12 +1137,15 @@ class Server:
                 if transaction.get("uid") != uid or transaction.get("plan") != plan:
                     return self.create_error_response("Transaction does not match the payment", 400)
 
-                if status == "refunded":
+                if status in REVOKING_STATUSES:
+                    if transaction.get("status") in REVOKING_STATUSES:
+                        return jsonify({"message": "Reversal already processed", "status": transaction.get("status")}), 200
+
                     self.transactions_collection.update_one(
                         {"transaction_id": transaction_id},
                         {
                             "$set": {
-                                "status": "refunded",
+                                "status": status,
                                 "refunded_at": datetime.now(timezone.utc),
                                 "mercadopago_payment_id": str(payment_id)
                             }
@@ -1163,7 +1166,6 @@ class Server:
                     else:
                         subscription_end = None
 
-                    # Only the refunded period is taken back: earlier renewals stay paid for.
                     if subscription_end:
                         subscription_end -= timedelta(days=self.plans[plan]["days"])
 
@@ -1183,8 +1185,8 @@ class Server:
                     self.users_collection.update_one({"uid": uid}, update_user)
 
                     return jsonify({
-                        "message": "Payment refunded and period revoked" if still_active else "Payment refunded and plan revoked",
-                        "status": "refunded",
+                        "message": "Payment reversed and period revoked" if still_active else "Payment reversed and plan revoked",
+                        "status": status,
                         "subscription_end": subscription_end.isoformat() if still_active else None
                     }), 200
 
@@ -1221,11 +1223,9 @@ class Server:
 
                 subscription_is_active = bool(current_subscription_end and current_subscription_end > now)
 
-                # A renewal extends the remaining period instead of discarding it.
                 subscription_start = current_subscription_end if subscription_is_active else now
                 subscription_end = subscription_start + timedelta(days=selected_plan["days"])
 
-                # An upgrade must never shrink the storage allowance the user already paid for.
                 current_plan = current_info_user.get("plan") if subscription_is_active else None
                 effective_plan = plan
 
