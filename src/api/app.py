@@ -17,13 +17,16 @@ from flask_jwt_extended import JWTManager, create_access_token, create_refresh_t
 from flask import Flask, request, jsonify, Response
 from datetime import datetime, timezone, timedelta
 from flask_limiter.util import get_remote_address
+from pymongo.errors import DuplicateKeyError
 from pymongo.collection import Collection
 from firebase_admin import auth
 from dotenv import load_dotenv
 from flask_cors import CORS
 from decimal import Decimal
 import secrets
+import hashlib
 import uuid
+import hmac
 import math
 import os
 
@@ -103,6 +106,13 @@ class Server:
 
         return True
 
+    def current_identity(self) -> str | None:
+        try:
+            return get_jwt_identity()
+
+        except Exception:
+            return None
+
     def user_or_ip(self) -> str | None:
         try:
             verify_jwt_in_request()
@@ -115,12 +125,12 @@ class Server:
             endpoints_require = ['misa_briefing_create_client', 'misa_briefing_update_client',
                                 'misa_getall_client_responses', 'misa_get_client_response_by_token',
                                 'misa_delete_client_response_by_token', 'misa_profile', 
-                                'misa_metrics', 'misa_refresh_token']
+                                'misa_metrics', 'misa_refresh_token', 'misa_checkout']
 
             if endpoint not in (endpoints_require):
                 return get_remote_address()
             
-            return False
+            return None
 
     def check_and_apply_block(self, current_user: str, increment: bool = True) -> Response | None:
         block_key = f"blocked:{current_user}"
@@ -152,16 +162,61 @@ class Server:
         return None
 
     def get_dynamic_limit(self) -> str:
-        current_user = get_jwt_identity()
-        if not current_user:
-            return "0 per month"
+        current_user = self.current_identity()
 
-        if not self.user_is_free(current_user):
-            user_info = self.get_user(current_user) or {}
-            plan = user_info.get("plan")
-            return PLAN_LIMITS.get(plan, "0 per month")
+        if not current_user or self.user_is_free(current_user):
+            return ABUSE_LIMIT
 
-        return "0 per month"
+        user_info = self.get_user(current_user) or {}
+        plan = user_info.get("plan")
+
+        return PLAN_LIMITS.get(plan, ABUSE_LIMIT)
+
+    def designer_is_active(self, designer_uid: str | None) -> bool:
+        if not designer_uid:
+            return False
+
+        return not self.user_is_free(designer_uid)
+
+    def verify_mercadopago_signature(self, payment_id: str) -> bool:
+        if not self.mercadopago_webhook_secret:
+            self.app.logger.warning(
+                "MERCADOPAGO_WEBHOOK_SECRET is not set: webhook signatures are not being verified."
+            )
+            return True
+
+        signature = request.headers.get("x-signature", "")
+        request_id = request.headers.get("x-request-id", "")
+
+        parts = dict(
+            piece.split("=", 1) for piece in signature.split(",") if "=" in piece
+        )
+
+        ts = parts.get("ts", "").strip()
+        received_signature = parts.get("v1", "").strip()
+
+        if not ts or not received_signature:
+            return False
+
+        data_id = str(payment_id)
+
+        if data_id.isalnum():
+            data_id = data_id.lower()
+
+        manifest = f"id:{data_id};"
+
+        if request_id:
+            manifest += f"request-id:{request_id};"
+
+        manifest += f"ts:{ts};"
+
+        expected_signature = hmac.new(
+            self.mercadopago_webhook_secret.encode("utf-8"),
+            manifest.encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+
+        return hmac.compare_digest(expected_signature, received_signature)
 
     def check_client_limit_storage(self, uid: str, user_info: dict) -> tuple[bool, int, int]:
         is_active = not self.user_is_free(uid)
@@ -177,17 +232,20 @@ class Server:
     def _register_routes(self) -> None:
         @self.app.errorhandler(429)
         def ratelimit_error(e) -> Response:
-            current_user = get_jwt_identity()
+            current_user = self.current_identity()
+
+            if not current_user:
+                return self.create_error_response("Too many requests. Please try again later.", 429)
+
             response_check_and_apply_block = self.check_and_apply_block(current_user)
 
             if response_check_and_apply_block:
                 return response_check_and_apply_block
 
-            endpoint = request.endpoint
+            breached = getattr(self.limiter, "current_limit", None)
 
-            if endpoint == "misa_briefing_create_client":
-                if self.user_is_free(current_user):
-                    return self.create_error_response("Too many requests. Please try again later or upgrade your plan to continue using this feature.", 429)
+            if request.endpoint == "misa_briefing_create_client" and breached and "month" in str(breached.limit):
+                return self.create_error_response("Monthly client creation quota reached for your plan. Upgrade your plan to continue using this feature.", 429)
 
             return self.create_error_response("Too many requests. Please try again later.", 429)
 
@@ -198,7 +256,8 @@ class Server:
         
         @self.app.route('/misa/briefing/create_client', methods=['POST'])
         @jwt_required()
-        @self.limiter.limit(self.get_dynamic_limit)
+        @self.limiter.limit(ABUSE_LIMIT)
+        @self.limiter.limit(self.get_dynamic_limit, deduct_when=lambda response: response.status_code == 201)
         def misa_briefing_create_client() -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -210,6 +269,9 @@ class Server:
 
                 if not current_info_user:
                     return self.create_error_response("User not found", 404)
+
+                if self.user_is_free(current_user):
+                    return self.create_error_response("An active subscription is required to create clients. Please subscribe to a plan to continue.", 402)
 
                 allowed, current_count, max_limit = self.check_client_limit_storage(current_info_user.get('uid'), current_info_user)
 
@@ -245,10 +307,16 @@ class Server:
                 if not name_project or not name_client or not email_client:
                     return self.create_error_response(f'Missing required fields: {", ".join(["name_project", "name_client", "email_client"])}', 400)
 
+                email_client = email_client.strip().lower()
+
                 if not is_valid_email(email_client):
                     return self.create_error_response('Invalid email format', 400)
 
-                client_exists = self.clients_collection.find_one({'email_client': email_client})
+                client_exists = self.clients_collection.find_one({
+                    'designer_uid': current_info_user['uid'],
+                    'email_client': email_client
+                })
+
                 if client_exists:
                     if client_exists.get('briefing'):
                         return self.create_error_response('A brand briefing already exists for this client.', 409)
@@ -277,7 +345,11 @@ class Server:
                     "created_at": datetime.now(timezone.utc)
                 }
 
-                self.clients_collection.insert_one(client_data)
+                try:
+                    self.clients_collection.insert_one(client_data)
+
+                except DuplicateKeyError:
+                    return self.create_error_response('A client with this email already exists.', 400)
 
                 return jsonify({
                     "message": "Client created successfully. Ready to start the brand briefing.",
@@ -446,6 +518,9 @@ class Server:
                 if not client_exists:
                     return self.create_error_response('No client found with the provided token.', 400)
 
+                if not self.designer_is_active(client_exists.get('designer_uid')):
+                    return self.create_error_response('This briefing is unavailable because the designer does not have an active subscription.', 403)
+
                 if client_exists.get('initial_questions_completed'):
                     return self.create_error_response('Initial questions have already been completed.', 400)
 
@@ -526,6 +601,9 @@ class Server:
                 current_info_client = self.clients_collection.find_one({'token': token})
                 if not current_info_client:
                     return self.create_error_response('Client not found.', 404)
+
+                if not self.designer_is_active(current_info_client.get('designer_uid')):
+                    return self.create_error_response('This briefing is unavailable because the designer does not have an active subscription.', 403)
 
                 if not current_info_client.get('initial_questions_completed'):
                     return self.create_error_response('Initial questions have not been completed yet.', 400)
@@ -687,6 +765,9 @@ class Server:
                     "token": token 
                 })
 
+                if not client_response:
+                    return self.create_error_response("Client response not found", 404)
+
                 client_response["_id"] = str(client_response["_id"])
 
                 return jsonify({
@@ -816,12 +897,28 @@ class Server:
                     return self.create_error_response("You are not authorized to access this resource", 401)
 
                 current_info_user = self.get_user(current_user)
-                current_info_user["_id"] = str(current_info_user["_id"])
-                
+
                 if not current_info_user:
                     return self.create_error_response("User not found", 404)
 
-                return jsonify(current_info_user), 200
+                is_free = self.user_is_free(current_user)
+                _, current_count, max_limit = self.check_client_limit_storage(current_user, current_info_user)
+
+                return jsonify({
+                    "uid": current_info_user.get("uid"),
+                    "email": current_info_user.get("email"),
+                    "name": current_info_user.get("name"),
+                    "picture": current_info_user.get("picture"),
+                    "is_free": is_free,
+                    "plan": None if is_free else current_info_user.get("plan"),
+                    "subscription_end": current_info_user.get("subscription_end"),
+                    "created_at": current_info_user.get("created_at"),
+                    "usage": {
+                        "current_count": current_count,
+                        "max_limit": max_limit,
+                        "remaining": max(0, max_limit - current_count)
+                    }
+                }), 200
 
             except Exception:
                 return self.create_error_response('An error occurred while processing the request.', 500)
@@ -883,9 +980,6 @@ class Server:
                 if not current_info_user:
                     return self.create_error_response("User not found", 404)
                 
-                if not self.user_is_free(current_user):
-                    return self.create_error_response("User already has a paid plan", 400)
-            
                 data = request.get_json()
 
                 if not isinstance(data, dict):
@@ -1009,6 +1103,9 @@ class Server:
                 if not payment_id:
                     return self.create_error_response("Payment ID not found", 400)
 
+                if not self.verify_mercadopago_signature(payment_id):
+                    return self.create_error_response("Invalid webhook signature", 401)
+
                 payment_response = self.mercadopago_sdk.payment().get(payment_id)
 
                 if payment_response["status"] != 200:
@@ -1037,6 +1134,9 @@ class Server:
                 if not transaction:
                     return self.create_error_response("Transaction not found", 404)
 
+                if transaction.get("uid") != uid or transaction.get("plan") != plan:
+                    return self.create_error_response("Transaction does not match the payment", 400)
+
                 if status == "refunded":
                     self.transactions_collection.update_one(
                         {"transaction_id": transaction_id},
@@ -1049,26 +1149,43 @@ class Server:
                         }
                     )
 
-                    self.users_collection.update_one(
-                        {
-                            "uid": uid,
-                            "mercadopago_payment_id": str(payment_id)
-                        },
-                        {
-                            "$set": {
-                                "is_free": True,
-                                "plan": None,
-                                "subscription_end": None
-                            },
-                            "$unset": {
-                                "mercadopago_payment_id": "",
-                            }
+                    refunded_user = self.get_user(uid)
+
+                    if not refunded_user:
+                        return self.create_error_response("User not found", 404)
+
+                    now = datetime.now(timezone.utc)
+                    subscription_end = refunded_user.get("subscription_end")
+
+                    if isinstance(subscription_end, datetime):
+                        if subscription_end.tzinfo is None:
+                            subscription_end = subscription_end.replace(tzinfo=timezone.utc)
+                    else:
+                        subscription_end = None
+
+                    # Only the refunded period is taken back: earlier renewals stay paid for.
+                    if subscription_end:
+                        subscription_end -= timedelta(days=self.plans[plan]["days"])
+
+                    still_active = bool(subscription_end and subscription_end > now)
+
+                    update_user = {
+                        "$set": {
+                            "is_free": not still_active,
+                            "plan": refunded_user.get("plan") if still_active else None,
+                            "subscription_end": subscription_end if still_active else None
                         }
-                    )
+                    }
+
+                    if refunded_user.get("mercadopago_payment_id") == str(payment_id):
+                        update_user["$unset"] = {"mercadopago_payment_id": ""}
+
+                    self.users_collection.update_one({"uid": uid}, update_user)
 
                     return jsonify({
-                        "message": "Payment refunded and plan revoked",
-                        "status": "refunded"
+                        "message": "Payment refunded and period revoked" if still_active else "Payment refunded and plan revoked",
+                        "status": "refunded",
+                        "subscription_end": subscription_end.isoformat() if still_active else None
                     }), 200
 
                 if status != "approved":
@@ -1093,6 +1210,28 @@ class Server:
 
                 selected_plan = self.plans[plan]
 
+                now = datetime.now(timezone.utc)
+                current_subscription_end = current_info_user.get("subscription_end")
+
+                if isinstance(current_subscription_end, datetime):
+                    if current_subscription_end.tzinfo is None:
+                        current_subscription_end = current_subscription_end.replace(tzinfo=timezone.utc)
+                else:
+                    current_subscription_end = None
+
+                subscription_is_active = bool(current_subscription_end and current_subscription_end > now)
+
+                # A renewal extends the remaining period instead of discarding it.
+                subscription_start = current_subscription_end if subscription_is_active else now
+                subscription_end = subscription_start + timedelta(days=selected_plan["days"])
+
+                # An upgrade must never shrink the storage allowance the user already paid for.
+                current_plan = current_info_user.get("plan") if subscription_is_active else None
+                effective_plan = plan
+
+                if current_plan and STORAGE_LIMITS.get(current_plan, 0) > STORAGE_LIMITS.get(plan, 0):
+                    effective_plan = current_plan
+
                 self.transactions_collection.update_one(
                     {"transaction_id": transaction_id},
                     {
@@ -1112,17 +1251,18 @@ class Server:
                     {
                         "$set": {
                             "is_free": False,
-                            "plan": plan,
-                            "subscription_end": datetime.now(timezone.utc) + timedelta(days=selected_plan["days"]),
+                            "plan": effective_plan,
+                            "subscription_end": subscription_end,
                             "mercadopago_payment_id": str(payment_id),
                         }
                     }
                 )
         
                 return jsonify({
-                    "message": "Payment approved and plan activated",
+                    "message": "Payment approved and plan renewed" if subscription_is_active else "Payment approved and plan activated",
                     "status": "approved",
-                    "plan": plan
+                    "plan": effective_plan,
+                    "subscription_end": subscription_end.isoformat()
                 }), 200
 
             except Exception:
