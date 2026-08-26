@@ -1,9 +1,10 @@
 from dotenv import load_dotenv
-from datetime import timedelta
 import mercadopago
 import os
 
 load_dotenv()
+
+REVOKING_STATUSES = frozenset({"refunded", "charged_back", "cancelled"})
 
 def initialize_mercadopago() -> dict:
     sdk = mercadopago.SDK(os.getenv("MERCADOPAGO_SECRET_KEY"))
