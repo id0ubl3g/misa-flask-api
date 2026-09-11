@@ -173,6 +173,7 @@ docker compose ps
 
 | Method   | Endpoint                                      | Description                                                                             |
 | -------- | --------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `GET`    | `/health`                                     | Checks the health and availability of the API.                                          |
 | `POST`   | `/misa/briefing/create_client`                | Creates a client and initializes a brand briefing.                                      |
 | `POST`   | `/misa/briefing/ping_client_response/<token>` | Processes the client's initial briefing responses and generates personalized questions. |
 | `POST`   | `/misa/briefing/pong_client_response/<token>` | Processes the client's personalized responses and generates the final brand briefing.   |

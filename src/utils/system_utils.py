@@ -32,27 +32,27 @@ def validate_user_data(data: dict) -> str | None:
             "Client name must be between 2 and 100 characters and contain only letters and numbers.")
         ],
         "business": [
-            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            (r'^[A-Za-z0-9À-ÿ ,.]{10,500}$',
             "Business must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "target_audience": [
-            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            (r'^[A-Za-z0-9À-ÿ ,.]{10,500}$',
             "Target audience must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "objective": [
-            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            (r'^[A-Za-z0-9À-ÿ ,.]{10,500}$',
             "Objective must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "differential": [
-            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            (r'^[A-Za-z0-9À-ÿ ,.]{10,500}$',
             "Differential must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "personality": [
-            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            (r'^[A-Za-z0-9À-ÿ ,.]{10,500}$',
             "Personality must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "questions_personalized": [
-            (r'^[A-Za-z0-9À-ÿ ]{10,500}$',
+            (r'^[A-Za-z0-9À-ÿ ,.]{10,500}$',
             "Questions personalized must be between 10 and 500 characters and contain only letters and numbers.")
         ],
         "token": [
