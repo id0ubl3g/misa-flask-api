@@ -1,5 +1,6 @@
 from flask_limiter import Limiter
 from dotenv import load_dotenv
+from flask import request
 from redis import Redis
 import os
 
@@ -32,6 +33,8 @@ def initialize_redis(app, key_func) -> dict:
         default_limits=["100 per minute"],
         storage_uri=redis_url
     )
+
+    limiter.request_filter(lambda: request.method == "OPTIONS")
 
     return {
         "redis_client": redis_client,

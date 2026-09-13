@@ -46,7 +46,7 @@ class Server:
 
         mongo = initialize_mongodb()
         initialize_firebase()
-        redis = initialize_redis(self.app, self.user_or_ip)
+        redis = initialize_redis(self.app, self.rate_limit_key)
         mercadopago = initialize_mercadopago()
 
         self.clients_collection: Collection = mongo["clients_collection"]
@@ -108,10 +108,26 @@ class Server:
 
     def current_identity(self) -> str | None:
         try:
+            verify_jwt_in_request(optional=True)
+
             return get_jwt_identity()
 
         except Exception:
             return None
+
+    def rate_limit_key(self) -> str:
+        for refresh in (False, True):
+            try:
+                verify_jwt_in_request(refresh=refresh, optional=not refresh)
+                identity = get_jwt_identity()
+
+                if identity:
+                    return identity
+
+            except Exception:
+                continue
+
+        return get_remote_address()
 
     def user_or_ip(self) -> str | None:
         try:
@@ -132,23 +148,25 @@ class Server:
             
             return None
 
-    def check_and_apply_block(self, current_user: str, increment: bool = True) -> Response | None:
+    def check_and_apply_block(self, current_user: str | None, increment: bool = True) -> Response | None:
+        if not current_user:
+            return None
+
         block_key = f"blocked:{current_user}"
         count_key = f"count429:{current_user}"
-        
+
         ttl = self.redis_client.ttl(block_key)
         if ttl > 0:
             minutes = max(1, math.ceil(ttl / 60))
             return self.create_error_response(f"You have been temporarily blocked due to repeated rate limit violations. Please try again in {minutes} minute(s).", 403)
-        
+
         count =  None
-        
+
         if increment:
-            pipe = self.redis_client.pipeline()
-            pipe.incr(count_key)
-            pipe.expire(count_key, 300)
-            
-            count, _ = pipe.execute()
+            count = self.redis_client.incr(count_key)
+
+            if count == 1:
+                self.redis_client.expire(count_key, 300)
 
         if increment and count == 3:
             return self.create_error_response("You are approaching the rate limit. One more failed attempt will block you for 30 minutes. Please try again later.", 429)
@@ -232,20 +250,17 @@ class Server:
     def _register_routes(self) -> None:
         @self.app.errorhandler(429)
         def ratelimit_error(e) -> Response:
-            current_user = self.current_identity()
+            breached = getattr(self.limiter, "current_limit", None)
 
-            if not current_user:
-                return self.create_error_response("Too many requests. Please try again later.", 429)
+            if request.endpoint == "misa_briefing_create_client" and breached and "month" in str(breached.limit):
+                return self.create_error_response("Monthly client creation quota reached for your plan. Upgrade your plan to continue using this feature.", 429)
+
+            current_user = self.current_identity()
 
             response_check_and_apply_block = self.check_and_apply_block(current_user)
 
             if response_check_and_apply_block:
                 return response_check_and_apply_block
-
-            breached = getattr(self.limiter, "current_limit", None)
-
-            if request.endpoint == "misa_briefing_create_client" and breached and "month" in str(breached.limit):
-                return self.create_error_response("Monthly client creation quota reached for your plan. Upgrade your plan to continue using this feature.", 429)
 
             return self.create_error_response("Too many requests. Please try again later.", 429)
 
@@ -255,9 +270,9 @@ class Server:
             return jsonify({"status": "healthy"}), 200
         
         @self.app.route('/misa/briefing/create_client', methods=['POST'])
-        @jwt_required()
-        @self.limiter.limit(ABUSE_LIMIT)
+        @self.limiter.limit(ABUSE_LIMIT, scope="abuse")
         @self.limiter.limit(self.get_dynamic_limit, deduct_when=lambda response: response.status_code == 201)
+        @jwt_required()
         def misa_briefing_create_client() -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -365,8 +380,8 @@ class Server:
                 return self.create_error_response('An error occurred while processing the request', 500)
         
         @self.app.route('/misa/briefing/update_client/<string:token>', methods=['PATCH'])
-        @jwt_required()
         @self.limiter.limit("10 per minute")
+        @jwt_required()
         def misa_briefing_update_client(token: str) -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -703,8 +718,8 @@ class Server:
                 return self.create_error_response('An error occurred while processing the request', 500)
 
         @self.app.route('/misa/getall_client_responses', methods=['GET'])
-        @jwt_required()
         @self.limiter.limit("200 per minute")
+        @jwt_required()
         def misa_getall_client_responses() -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -746,8 +761,8 @@ class Server:
                 return self.create_error_response('An error occurred while processing the request', 500)
 
         @self.app.route('/misa/get_client_response/<string:token>', methods=['GET'])
-        @jwt_required()
         @self.limiter.limit("200 per minute")
+        @jwt_required()
         def misa_get_client_response_by_token(token: str) -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -779,8 +794,8 @@ class Server:
                 return self.create_error_response('An error occurred while processing the request', 500)
 
         @self.app.route('/misa/delete_client_response/<string:token>', methods=['DELETE'])
-        @jwt_required()
         @self.limiter.limit("200 per minute")
+        @jwt_required()
         def misa_delete_client_response_by_token(token: str) -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -861,8 +876,8 @@ class Server:
                 return self.create_error_response('An error occurred while processing the request', 500)
 
         @self.app.route('/misa/refresh_token', methods=['POST'])
+        @self.limiter.limit("30 per minute")
         @jwt_required(refresh=True)
-        @self.limiter.limit("5 per minute")
         def misa_refresh_token() -> Response:
             try:                
                 current_user = get_jwt_identity()
@@ -883,8 +898,8 @@ class Server:
                 return self.create_error_response('An error occurred while processing the request', 500)
 
         @self.app.route('/misa/profile', methods=['GET'])
-        @jwt_required()
         @self.limiter.limit("200 per minute")
+        @jwt_required()
         def misa_profile() -> Response:
             try:
                 current_user = self.user_or_ip()
@@ -924,8 +939,8 @@ class Server:
                 return self.create_error_response('An error occurred while processing the request.', 500)
 
         @self.app.route('/misa/metrics', methods=['GET'])
-        @jwt_required()
         @self.limiter.limit("200 per minute")
+        @jwt_required()
         def misa_metrics() -> Response:
             try:    
                 current_user = self.user_or_ip()
@@ -962,8 +977,8 @@ class Server:
                 return self.create_error_response('An error occurred while processing the request.', 500)
 
         @self.app.route('/misa/checkout', methods=['POST'])
-        @jwt_required()
         @self.limiter.limit("10 per minute")
+        @jwt_required()
         def misa_checkout() -> Response:
             try:
                 current_user = self.user_or_ip()
