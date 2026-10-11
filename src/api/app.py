@@ -247,6 +247,41 @@ class Server:
 
         return current_count < max_limit, current_count, max_limit
 
+    def recompute_subscription(self, uid: str) -> dict:
+        # Rebuilds the subscription from the approved payments so a reversal removes exactly the period it paid for.
+        approved_transactions = self.transactions_collection.find(
+            {"uid": uid, "status": "approved"}
+        ).sort("approved_at", 1)
+
+        subscription_end = None
+        plan = None
+
+        for transaction in approved_transactions:
+            approved_at = transaction.get("approved_at")
+            transaction_plan = transaction.get("plan")
+
+            if not isinstance(approved_at, datetime) or transaction_plan not in self.plans:
+                continue
+
+            if approved_at.tzinfo is None:
+                approved_at = approved_at.replace(tzinfo=timezone.utc)
+
+            is_renewal = bool(subscription_end and subscription_end > approved_at)
+            period_start = subscription_end if is_renewal else approved_at
+
+            if not is_renewal or STORAGE_LIMITS.get(transaction_plan, 0) >= STORAGE_LIMITS.get(plan, 0):
+                plan = transaction_plan
+
+            subscription_end = period_start + timedelta(days=self.plans[transaction_plan]["days"])
+
+        is_active = bool(subscription_end and subscription_end > datetime.now(timezone.utc))
+
+        return {
+            "is_free": not is_active,
+            "plan": plan if is_active else None,
+            "subscription_end": subscription_end if is_active else None
+        }
+
     def _register_routes(self) -> None:
         @self.app.errorhandler(429)
         def ratelimit_error(e) -> Response:
@@ -1131,8 +1166,18 @@ class Server:
 
         @self.app.route('/misa/webhook', methods=['POST'])
         def misa_webhook() -> Response:
+            def ignore_notification(reason: str) -> Response:
+                # Mercado Pago retries any non-2xx response, so notifications that can never succeed are acknowledged.
+                self.app.logger.warning("Mercado Pago notification ignored: %s", reason)
+                return jsonify({"message": "Notification ignored", "reason": reason}), 200
+
             try:
                 data = request.get_json(silent=True) or {}
+
+                notification_type = data.get("type") or request.args.get("type") or request.args.get("topic")
+
+                if notification_type and notification_type != "payment":
+                    return jsonify({"message": "Notification ignored", "type": notification_type}), 200
 
                 payment_id = (
                     data.get("data", {}).get("id")
@@ -1156,77 +1201,70 @@ class Server:
                 external_reference = payment.get("external_reference")
 
                 if not external_reference:
-                    return self.create_error_response("External reference not found", 400)
+                    return ignore_notification("External reference not found")
                 
                 parts = external_reference.split(":")
 
                 if len(parts) != 3:
-                    return self.create_error_response("Invalid external reference", 400)
+                    return ignore_notification("Invalid external reference")
 
                 uid, plan, transaction_id = parts
 
                 if plan not in self.plans:
-                    return self.create_error_response("Invalid plan", 400)
+                    return ignore_notification("Invalid plan")
 
                 transaction = self.transactions_collection.find_one({"transaction_id": transaction_id})
 
                 if not transaction:
-                    return self.create_error_response("Transaction not found", 404)
+                    return ignore_notification("Transaction not found")
 
                 if transaction.get("uid") != uid or transaction.get("plan") != plan:
-                    return self.create_error_response("Transaction does not match the payment", 400)
+                    return ignore_notification("Transaction does not match the payment")
 
                 if status in REVOKING_STATUSES:
-                    if transaction.get("status") in REVOKING_STATUSES:
-                        return jsonify({"message": "Reversal already processed", "status": transaction.get("status")}), 200
+                    now = datetime.now(timezone.utc)
 
-                    self.transactions_collection.update_one(
-                        {"transaction_id": transaction_id},
+                    # Only a payment that was approved granted days, so only that one may take them back.
+                    revoked_transaction = self.transactions_collection.find_one_and_update(
+                        {"transaction_id": transaction_id, "status": "approved"},
                         {
                             "$set": {
                                 "status": status,
-                                "refunded_at": datetime.now(timezone.utc),
+                                "refunded_at": now,
                                 "mercadopago_payment_id": str(payment_id)
                             }
                         }
                     )
 
-                    refunded_user = self.get_user(uid)
+                    if not revoked_transaction:
+                        never_approved = self.transactions_collection.update_one(
+                            {"transaction_id": transaction_id, "status": "pending"},
+                            {"$set": {"status": status, "mercadopago_payment_id": str(payment_id)}}
+                        )
 
-                    if not refunded_user:
-                        return self.create_error_response("User not found", 404)
+                        if never_approved.matched_count:
+                            return jsonify({"message": "Payment was never approved, nothing to revoke", "status": status}), 200
 
-                    now = datetime.now(timezone.utc)
-                    subscription_end = refunded_user.get("subscription_end")
+                        return jsonify({"message": "Reversal already processed", "status": status}), 200
 
-                    if isinstance(subscription_end, datetime):
-                        if subscription_end.tzinfo is None:
-                            subscription_end = subscription_end.replace(tzinfo=timezone.utc)
-                    else:
-                        subscription_end = None
+                    subscription = self.recompute_subscription(uid)
 
-                    if subscription_end:
-                        subscription_end -= timedelta(days=self.plans[plan]["days"])
+                    result = self.users_collection.update_one({"uid": uid}, {"$set": subscription})
 
-                    still_active = bool(subscription_end and subscription_end > now)
+                    if result.matched_count == 0:
+                        return ignore_notification("User not found")
 
-                    update_user = {
-                        "$set": {
-                            "is_free": not still_active,
-                            "plan": refunded_user.get("plan") if still_active else None,
-                            "subscription_end": subscription_end if still_active else None
-                        }
-                    }
+                    self.users_collection.update_one(
+                        {"uid": uid, "mercadopago_payment_id": str(payment_id)},
+                        {"$unset": {"mercadopago_payment_id": ""}}
+                    )
 
-                    if refunded_user.get("mercadopago_payment_id") == str(payment_id):
-                        update_user["$unset"] = {"mercadopago_payment_id": ""}
-
-                    self.users_collection.update_one({"uid": uid}, update_user)
+                    still_active = not subscription["is_free"]
 
                     return jsonify({
                         "message": "Payment reversed and period revoked" if still_active else "Payment reversed and plan revoked",
                         "status": status,
-                        "subscription_end": subscription_end.isoformat() if still_active else None
+                        "subscription_end": subscription["subscription_end"].isoformat() if still_active else None
                     }), 200
 
                 if status != "approved":
@@ -1235,20 +1273,39 @@ class Server:
                         "status": status
                     }), 200
 
-                if transaction.get("status") == "approved":
-                    return jsonify({"message": "Payment already processed"}), 200
+                if transaction.get("status") != "pending":
+                    return jsonify({"message": "Payment already processed", "status": transaction.get("status")}), 200
 
                 current_info_user = self.get_user(uid)
 
                 if not current_info_user:
-                    return self.create_error_response("User not found", 404)
+                    return ignore_notification("User not found")
 
                 expected_price = Decimal(str(self.plans[plan]["price"]))
                 paid_price = Decimal(str(payment.get("transaction_amount")))
 
                 if paid_price != expected_price:
-                    return self.create_error_response("Payment amount does not match the plan price", 400)
+                    return ignore_notification("Payment amount does not match the plan price")
 
+                # Atomic claim: concurrent or retried notifications for the same payment credit the plan only once.
+                approved_transaction = self.transactions_collection.find_one_and_update(
+                    {"transaction_id": transaction_id, "status": "pending"},
+                    {
+                        "$set": {
+                            "status": "approved",
+                            "mercadopago_payment_id": str(payment_id),
+                            "approved_at": datetime.now(timezone.utc)
+                        },
+                        "$unset": {
+                            "expires_at": ""
+                        }
+                    }
+                )
+
+                if not approved_transaction:
+                    return jsonify({"message": "Payment already processed"}), 200
+
+                current_info_user = self.get_user(uid)
                 selected_plan = self.plans[plan]
 
                 now = datetime.now(timezone.utc)
@@ -1271,20 +1328,6 @@ class Server:
                 if current_plan and STORAGE_LIMITS.get(current_plan, 0) > STORAGE_LIMITS.get(plan, 0):
                     effective_plan = current_plan
 
-                self.transactions_collection.update_one(
-                    {"transaction_id": transaction_id},
-                    {
-                        "$set": {
-                            "status": "approved",
-                            "mercadopago_payment_id": str(payment_id),
-                            "approved_at": datetime.now(timezone.utc)
-                        },
-                        "$unset": {
-                            "expires_at": ""
-                        }
-                    }
-                )
-                
                 self.users_collection.update_one(
                     {"uid": uid},
                     {
@@ -1305,4 +1348,5 @@ class Server:
                 }), 200
 
             except Exception:
+                self.app.logger.exception("Failed to process Mercado Pago webhook")
                 return self.create_error_response('An error occurred while processing the request.', 500)
