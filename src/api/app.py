@@ -60,9 +60,11 @@ class Server:
         self.mercadopago_webhook_secret = mercadopago["webhook_secret"]
         self.plans = mercadopago['plans']
 
+        cors_origins = [origin.strip() for origin in (os.getenv("CORS_ORIGINS") or "*").split(",") if origin.strip()]
+
         CORS(
             self.app,
-            origins="*",
+            origins=cors_origins,
             allow_headers=["Content-Type", "Authorization"],
             methods=["GET", "POST", "PUT", "PATCH", "DELETE"]
         )
