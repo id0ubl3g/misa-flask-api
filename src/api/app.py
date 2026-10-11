@@ -825,8 +825,17 @@ class Server:
         @self.limiter.limit("10 per minute")
         def misa_auth_google():
             try:
-                token = request.json.get("token")
-                decoded_token = auth.verify_id_token(token)
+                data = request.get_json(silent=True)
+                token = data.get("token") if isinstance(data, dict) else None
+
+                if not isinstance(token, str) or not token:
+                    return self.create_error_response("Token is required", 400)
+
+                try:
+                    decoded_token = auth.verify_id_token(token)
+
+                except (ValueError, auth.InvalidIdTokenError, auth.ExpiredIdTokenError, auth.RevokedIdTokenError):
+                    return self.create_error_response("Invalid or expired token", 401)
 
                 uid = decoded_token["uid"]
                 email = decoded_token["email"]
