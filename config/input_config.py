@@ -17,3 +17,8 @@ ALLOWED_FIELDS = {
     "pending_url",
     "token"
 }
+UPDATE_CLIENT_FIELDS = {
+    "name_project",
+    "name_client",
+    "email_client"
+}

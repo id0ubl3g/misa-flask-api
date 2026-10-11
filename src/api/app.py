@@ -437,7 +437,7 @@ class Server:
                 if not data:
                     return self.create_error_response("No data provided", 400)
 
-                unknown_fields = set(data.keys()) - ALLOWED_FIELDS
+                unknown_fields = set(data.keys()) - UPDATE_CLIENT_FIELDS
 
                 if unknown_fields:
                     return self.create_error_response(f"Disallowed fields found: {', '.join(sorted(unknown_fields))}", 400)
@@ -485,14 +485,18 @@ class Server:
                 if not update_data:
                     return self.create_error_response("No fields to update", 400)
 
-                result = self.clients_collection.update_one({
-                    "token": token, 
-                    "designer_uid": current_user
-                    }, 
-                        {
-                            "$set": update_data
-                        }
-                    )
+                try:
+                    result = self.clients_collection.update_one({
+                        "token": token,
+                        "designer_uid": current_user
+                        },
+                            {
+                                "$set": update_data
+                            }
+                        )
+
+                except DuplicateKeyError:
+                    return self.create_error_response("A client with this email already exists.", 409)
 
                 if result.matched_count == 0:
                     return self.create_error_response("Client not found", 404)
