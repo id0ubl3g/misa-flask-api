@@ -835,6 +835,15 @@ class Server:
 
                 user = self.users_collection.find_one({"uid": uid})
 
+                if not user and decoded_token.get("email_verified"):
+                    user = self.users_collection.find_one({"email": email})
+
+                    if user:
+                        old_uid = user["uid"]
+                        self.users_collection.update_one({"_id": user["_id"]}, {"$set": {"uid": uid}})
+                        self.clients_collection.update_many({"designer_uid": old_uid}, {"$set": {"designer_uid": uid}})
+                        self.transactions_collection.update_many({"uid": old_uid}, {"$set": {"uid": uid}})
+
                 access_token = create_access_token(identity=uid)
                 refresh_token = create_refresh_token(identity=uid)
                 
