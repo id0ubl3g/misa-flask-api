@@ -1,4 +1,21 @@
 services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: misa-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    ports:
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+
   misa-api:
     build: .
     container_name: misa-flask-api
@@ -6,4 +23,26 @@ services:
       - "5000:5000"
     env_file:
       - .env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     restart: always
+
+  misa-worker:
+    build: .
+    container_name: misa-briefing-worker
+    command: ["python", "-m", "src.workers.briefing_worker"]
+    env_file:
+      - .env
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  rabbitmq-data:

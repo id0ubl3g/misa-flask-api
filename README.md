@@ -49,6 +49,7 @@ The Misa Flask API is a web application developed with Flask, designed to genera
 * Firebase authentication
 * Google authentication
 * Mercado Pago subscription integration
+* RabbitMQ queue and worker for asynchronous AI briefing generation
 * Docker and Docker Compose support
 * Metrics and client briefing statistics
 
@@ -73,6 +74,11 @@ The Misa Flask API is a web application developed with Flask, designed to genera
     │   │   └── app.py
     │   ├── modules/
     │   │   └── vertex_ai.py
+    │   ├── rabbitmq/
+    │   │   ├── connection.py
+    │   │   └── publisher.py
+    │   ├── workers/
+    │   │   └── briefing_worker.py
     │   └── utils/
     │       ├── return_responses.py
     │       └── system_utils.py
@@ -161,6 +167,10 @@ Start the application and its dependencies with Docker Compose:
 docker compose up -d --build
 ```
 
+This starts the API, the RabbitMQ broker and the briefing worker. Set `RABBITMQ_USER` and `RABBITMQ_PASS` in `.env` before the first start, since RabbitMQ creates its user from them.
+
+The briefing generation runs in the worker: `ping_client_response` and `pong_client_response` return `202` and the client polls `/misa/briefing/status/<token>` until `status` is `done` (or `failed`, in which case the answers can be submitted again).
+
 To check the running containers:
 
 ```sh
@@ -175,8 +185,9 @@ docker compose ps
 | -------- | --------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `GET`    | `/health`                                     | Checks the health and availability of the API.                                          |
 | `POST`   | `/misa/briefing/create_client`                | Creates a client and initializes a brand briefing.                                      |
-| `POST`   | `/misa/briefing/ping_client_response/<token>` | Processes the client's initial briefing responses and generates personalized questions. |
-| `POST`   | `/misa/briefing/pong_client_response/<token>` | Processes the client's personalized responses and generates the final brand briefing.   |
+| `POST`   | `/misa/briefing/ping_client_response/<token>` | Queues the client's initial responses to generate personalized questions (returns 202). |
+| `POST`   | `/misa/briefing/pong_client_response/<token>` | Queues the client's personalized responses to generate the brand briefing (returns 202). |
+| `GET`    | `/misa/briefing/status/<token>`               | Returns the briefing job status and, when ready, the generated questions or briefing.   |
 | `GET`    | `/misa/getall_client_responses`               | Returns all client responses belonging to the authenticated designer.                   |
 | `GET`    | `/misa/get_client_response/<token>`           | Returns a specific client response using the client token.                              |
 | `DELETE` | `/misa/delete_client_response/<token>`        | Deletes a client response using the client token.                                       |

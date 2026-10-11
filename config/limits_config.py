@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 PLAN_LIMITS = {
     "1_month": "5 per month",
     "6_months": "25 per month",
@@ -11,3 +13,5 @@ STORAGE_LIMITS = {
 }
 
 ABUSE_LIMIT = "5 per minute"
+
+STALE_JOB_AFTER = timedelta(minutes=10)

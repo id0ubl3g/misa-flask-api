@@ -1,8 +1,7 @@
-from src.modules.vertex_ai import Vertex
+from src.rabbitmq.publisher import publish_briefing_job
 
 from config.model_questions_personalized import model_questions_personalized
 from config.model_initial_questions import model_initial_questions
-from config.prompt_config import prompt_questions_personalized, prompt_generate_briefing
 from config.limits_config import *
 from config.input_config import *
 
@@ -11,7 +10,7 @@ from config.providers.initialize_firebase import initialize_firebase
 from config.providers.initialize_redis  import initialize_redis
 from config.providers.initialize_mercadopago import initialize_mercadopago, REVOKING_STATUSES
 
-from src.utils.system_utils import parse_ai_json, validate_user_data, is_valid_email
+from src.utils.system_utils import validate_user_data, is_valid_email
 
 from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token, jwt_required, get_jwt_identity, verify_jwt_in_request
 from flask import Flask, request, jsonify, Response
@@ -19,6 +18,7 @@ from datetime import datetime, timezone, timedelta
 from flask_limiter.util import get_remote_address
 from pymongo.errors import DuplicateKeyError
 from pymongo.collection import Collection
+from pymongo import ReturnDocument
 from firebase_admin import auth
 from dotenv import load_dotenv
 from flask_cors import CORS
@@ -246,6 +246,46 @@ class Server:
         })
 
         return current_count < max_limit, current_count, max_limit
+
+    def claim_briefing_job(self, client_filter: dict, stage: str) -> dict | None:
+        now = datetime.now(timezone.utc)
+
+        # Jobs stuck for too long (e.g. worker down) can be resubmitted instead of blocking the client forever.
+        return self.clients_collection.find_one_and_update(
+            {
+                **client_filter,
+                "$or": [
+                    {"job_status": {"$nin": ["queued", "processing"]}},
+                    {"job_updated_at": {"$lt": now - STALE_JOB_AFTER}}
+                ]
+            },
+            {
+                "$set": {"job_stage": stage, "job_status": "queued", "job_updated_at": now},
+                "$unset": {"job_error": ""}
+            },
+            return_document=ReturnDocument.AFTER
+        )
+
+    def enqueue_briefing_job(self, message: dict) -> bool:
+        try:
+            publish_briefing_job(message)
+            return True
+
+        except Exception:
+            self.app.logger.exception("Failed to publish briefing job for %s", message.get("token"))
+
+            self.clients_collection.update_one(
+                {"token": message["token"], "job_stage": message["stage"]},
+                {
+                    "$set": {
+                        "job_status": "failed",
+                        "job_error": "The briefing service is temporarily unavailable. Please try again in a few minutes.",
+                        "job_updated_at": datetime.now(timezone.utc)
+                    }
+                }
+            )
+
+            return False
 
     def recompute_subscription(self, uid: str) -> dict:
         # Rebuilds the subscription from the approved payments so a reversal removes exactly the period it paid for.
@@ -601,28 +641,22 @@ class Server:
                     }
                 }
 
-                merged_prompt = f"{prompt_questions_personalized}{questions}"
-                response_generative_ai = Vertex().start_chat(merged_prompt)
-                response_generative_ai_json = parse_ai_json(response_generative_ai['data'])
-
-                self.clients_collection.update_one(
-                    {"token": token},
-                    {
-                        "$set": {
-                            "questions": {
-                                "initial_questions": questions,
-                                "questions_personalized": response_generative_ai_json
-                            },
-                            "initial_questions_completed": True
-                        }
-                    }
+                claimed_client = self.claim_briefing_job(
+                    {"token": token, "initial_questions_completed": False},
+                    "initial"
                 )
 
+                if not claimed_client:
+                    return self.create_error_response('Your answers are already being processed.', 409)
+
+                if not self.enqueue_briefing_job({"token": token, "stage": "initial", "questions": questions}):
+                    return self.create_error_response('The briefing service is temporarily unavailable. Please try again in a few minutes.', 503)
+
                 return jsonify({
-                    "message": "Brand briefing received successfully. Personalized follow-up questions generated.",
-                    "questions": response_generative_ai_json,
+                    "message": "Brand briefing received successfully. Personalized follow-up questions are being generated.",
+                    "status": "queued",
                     "token": token
-                }), 201
+                }), 202
 
             except Exception:
                 return self.create_error_response('An error occurred while processing the request', 500)
@@ -734,24 +768,66 @@ class Server:
                         "answer": answer
                     }
 
-                merged_prompt = f"{prompt_generate_briefing}{initial_questions}{data_context_questions}{data_refinement_questions}"
-                response_generative_ai = Vertex().start_chat(merged_prompt)
-                response_generative_ai_json = parse_ai_json(response_generative_ai['data'])
-
-                self.clients_collection.update_one(
-                    {"token": token},
-                    {
-                        "$set": {
-                            "questions.questions_personalized.context_questions": data_context_questions,
-                            "questions.questions_personalized.refinement_questions": data_refinement_questions,
-                            "questions_personalized_completed": True,
-                            "briefing": True,
-                            "briefing_data": response_generative_ai_json
-                        }
-                    }
+                claimed_client = self.claim_briefing_job(
+                    {"token": token, "initial_questions_completed": True, "questions_personalized_completed": False},
+                    "briefing"
                 )
-                                
-                return jsonify(response_generative_ai_json)
+
+                if not claimed_client:
+                    return self.create_error_response('Your answers are already being processed.', 409)
+
+                job = {
+                    "token": token,
+                    "stage": "briefing",
+                    "initial_questions": initial_questions,
+                    "context_questions": data_context_questions,
+                    "refinement_questions": data_refinement_questions
+                }
+
+                if not self.enqueue_briefing_job(job):
+                    return self.create_error_response('The briefing service is temporarily unavailable. Please try again in a few minutes.', 503)
+
+                return jsonify({
+                    "message": "Answers received successfully. The brand briefing is being generated.",
+                    "status": "queued",
+                    "token": token
+                }), 202
+
+            except Exception:
+                return self.create_error_response('An error occurred while processing the request', 500)
+
+        @self.app.route('/misa/briefing/status/<string:token>', methods=['GET'])
+        @self.limiter.limit("60 per minute")
+        def misa_briefing_status(token: str) -> Response:
+            try:
+                validation_error = validate_user_data({"token": token})
+
+                if validation_error:
+                    return self.create_error_response(validation_error, 400)
+
+                client = self.clients_collection.find_one({'token': token})
+
+                if not client:
+                    return self.create_error_response('Client not found.', 404)
+
+                response = {
+                    "token": token,
+                    "stage": client.get("job_stage"),
+                    "status": client.get("job_status"),
+                    "initial_questions_completed": client.get("initial_questions_completed", False),
+                    "questions_personalized_completed": client.get("questions_personalized_completed", False)
+                }
+
+                if client.get("job_status") == "failed":
+                    response["error"] = client.get("job_error")
+
+                if client.get("initial_questions_completed") and not client.get("questions_personalized_completed"):
+                    response["questions"] = client["questions"]["questions_personalized"]
+
+                if client.get("briefing"):
+                    response["briefing_data"] = client.get("briefing_data")
+
+                return jsonify(response), 200
 
             except Exception:
                 return self.create_error_response('An error occurred while processing the request', 500)

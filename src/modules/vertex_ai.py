@@ -24,6 +24,7 @@ class Vertex:
             "temperature": 0,
             "top_p": 0.9,
             "top_k": 40,
+            "response_mime_type": "application/json",
         }
 
     def start_chat(self, input_text: str) -> dict:
