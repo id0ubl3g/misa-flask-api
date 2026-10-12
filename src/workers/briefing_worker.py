@@ -44,7 +44,6 @@ class BriefingWorker:
                     raise ValueError(f"Generated questions are missing {group}.{key}")
 
     def claim_job(self, token: str, stage: str, redelivered: bool) -> bool:
-        # A redelivered message means the previous consumer died mid-job, so it may still be marked as processing.
         claimable_statuses = ["queued", "processing"] if redelivered else ["queued"]
 
         result = self.clients_collection.update_one(
@@ -70,6 +69,7 @@ class BriefingWorker:
                         "questions_personalized": questions_personalized
                     },
                     "initial_questions_completed": True,
+                    "initial_questions_completed_at": datetime.now(timezone.utc),
                     "job_status": "done",
                     "job_updated_at": datetime.now(timezone.utc)
                 },
@@ -97,6 +97,7 @@ class BriefingWorker:
                     "questions_personalized_completed": True,
                     "briefing": True,
                     "briefing_data": briefing_data,
+                    "briefing_completed_at": datetime.now(timezone.utc),
                     "job_status": "done",
                     "job_updated_at": datetime.now(timezone.utc)
                 },

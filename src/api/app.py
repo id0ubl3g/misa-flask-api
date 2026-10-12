@@ -262,7 +262,6 @@ class Server:
     def claim_briefing_job(self, client_filter: dict, stage: str) -> dict | None:
         now = datetime.now(timezone.utc)
 
-        # Jobs stuck for too long (e.g. worker down) can be resubmitted instead of blocking the client forever.
         return self.clients_collection.find_one_and_update(
             {
                 **client_filter,
@@ -894,7 +893,9 @@ class Server:
                         "initial_questions_completed": response['initial_questions_completed'],
                         "questions_personalized_completed": response['questions_personalized_completed'],
                         "briefing": response['briefing'],
-                        "created_at": response['created_at']
+                        "created_at": response['created_at'],
+                        "initial_questions_completed_at": response.get('initial_questions_completed_at'),
+                        "briefing_completed_at": response.get('briefing_completed_at')
                     })  
 
                 return jsonify({
