@@ -814,6 +814,10 @@ class Server:
 
                 response = {
                     "token": token,
+                    "name_project": client.get("name_project"),
+                    "name_client": client.get("name_client"),
+                    "designer": client.get("designer"),
+                    "designer_active": self.designer_is_active(client.get("designer_uid")),
                     "stage": client.get("job_stage"),
                     "status": client.get("job_status"),
                     "initial_questions_completed": client.get("initial_questions_completed", False),
@@ -822,6 +826,9 @@ class Server:
 
                 if client.get("job_status") == "failed":
                     response["error"] = client.get("job_error")
+
+                if not client.get("initial_questions_completed"):
+                    response["initial_questions"] = model_initial_questions["model_initial_questions"]
 
                 if client.get("initial_questions_completed") and not client.get("questions_personalized_completed"):
                     response["questions"] = client["questions"]["questions_personalized"]
