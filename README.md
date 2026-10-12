@@ -242,8 +242,121 @@ curl -X POST "http://127.0.0.1:5000/misa/briefing/create_client" \
 #### Frontend Integration Create Client
 
 ```ts
+const API_URL = import.meta.env.VITE_API_URL
 
+interface CreateClientPayload {
+  name_project: string
+  name_client: string
+  email_client: string
+}
+
+interface CreateClientResponse {
+  message: string
+  token: string
+  usage: {
+    current_count: number
+    max_limit: number
+    remaining: number
+  }
+}
+
+export async function createClient(
+  accessToken: string,
+  payload: CreateClientPayload,
+): Promise<CreateClientResponse> {
+  const response = await fetch(`${API_URL}/misa/briefing/create_client`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  })
+
+  const data = await response.json()
+
+  if (!response.ok) {
+    throw new Error(data.error)
+  }
+
+  return data
+}
+
+const { token } = await createClient(accessToken, {
+  name_project: 'Brand Identity Project',
+  name_client: 'John Doe',
+  email_client: 'john@example.com',
+})
+
+const briefingLink = `${window.location.origin}/briefing/${token}`
 ```
+
+#### Frontend Integration Briefing Flow
+
+The client answers the briefing without logging in, using only the token from the link. Both submissions are processed by the worker, so the frontend sends the answers and then polls the status endpoint until the job is `done` or `failed`.
+
+```ts
+type BriefingStage = 'initial' | 'briefing'
+
+interface BriefingStatus {
+  token: string
+  stage: BriefingStage | null
+  status: 'queued' | 'processing' | 'done' | 'failed' | null
+  initial_questions_completed: boolean
+  questions_personalized_completed: boolean
+  questions?: Record<'context_questions' | 'refinement_questions', Record<string, string>>
+  briefing_data?: Record<string, unknown>
+  error?: string
+}
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+async function waitForBriefingJob(token: string, stage: BriefingStage): Promise<BriefingStatus> {
+  const deadline = Date.now() + 5 * 60 * 1000
+
+  while (Date.now() < deadline) {
+    await wait(3000)
+
+    const response = await fetch(`${API_URL}/misa/briefing/status/${token}`)
+    const status: BriefingStatus = await response.json()
+
+    if (status.stage !== stage) continue
+    if (status.status === 'done') return status
+    if (status.status === 'failed') throw new Error(status.error)
+  }
+
+  throw new Error('The briefing is taking longer than expected. Please try again later.')
+}
+
+async function submitBriefingJob(path: string, token: string, payload: object, stage: BriefingStage) {
+  const response = await fetch(`${API_URL}${path}/${token}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok && response.status !== 409) {
+    throw new Error((await response.json()).error)
+  }
+
+  return waitForBriefingJob(token, stage)
+}
+
+const { questions } = await submitBriefingJob('/misa/briefing/ping_client_response', token, {
+  business: 'Specialty coffee shop focused on local producers.',
+  target_audience: 'Young professionals who work near downtown.',
+  objective: 'Build a brand that feels welcoming and premium.',
+  differential: 'Beans roasted in house every morning.',
+  personality: 'Warm, curious and close to the community.',
+}, 'initial')
+
+const { briefing_data } = await submitBriefingJob('/misa/briefing/pong_client_response', token, {
+  context_questions: { 'question 1': '...', 'question 2': '...', 'question 3': '...', 'question 4': '...', 'question 5': '...' },
+  refinement_questions: { 'question 1': '...', 'question 2': '...', 'question 3': '...', 'question 4': '...', 'question 5': '...' },
+}, 'briefing')
+```
+
+Since the status endpoint always reflects the latest stage, the frontend can also call it when the briefing page opens to resume the client at the right step, for example after a page reload or when the link is opened on another device.
 
 ## Acknowledgments
 
