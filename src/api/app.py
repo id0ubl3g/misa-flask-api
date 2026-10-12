@@ -148,7 +148,7 @@ class Server:
             endpoints_require = ['misa_briefing_create_client', 'misa_briefing_update_client',
                                 'misa_getall_client_responses', 'misa_get_client_response_by_token',
                                 'misa_delete_client_response_by_token', 'misa_profile', 
-                                'misa_metrics', 'misa_refresh_token', 'misa_checkout']
+                                'misa_payments', 'misa_refresh_token', 'misa_checkout']
 
             if endpoint not in (endpoints_require):
                 return get_remote_address()
@@ -1137,40 +1137,43 @@ class Server:
             except Exception:
                 return self.create_error_response('An error occurred while processing the request.', 500)
 
-        @self.app.route('/misa/metrics', methods=['GET'])
-        @self.limiter.limit("200 per minute")
+        @self.app.route('/misa/payments', methods=['GET'])
+        @self.limiter.limit("60 per minute")
         @jwt_required()
-        def misa_metrics() -> Response:
-            try:    
+        def misa_payments() -> Response:
+            try:
                 current_user = self.user_or_ip()
-                
+
                 response_check_and_apply_block = self.check_and_apply_block(current_user, increment=False)
                 if response_check_and_apply_block:
                     return response_check_and_apply_block
-                
+
                 if not current_user:
                     return self.create_error_response("You are not authorized to access this resource", 401)
 
-                current_info_user = self.get_user(current_user)
-                
-                if not current_info_user:
+                if not self.get_user(current_user):
                     return self.create_error_response("User not found", 404)
 
-                designer_uid = current_info_user['uid']
+                transactions = self.transactions_collection.find(
+                    {"uid": current_user},
+                    {"_id": 0, "transaction_id": 1, "plan": 1, "amount": 1, "status": 1, "created_at": 1, "approved_at": 1, "refunded_at": 1}
+                ).sort("created_at", -1).limit(50)
 
-                clients = self.clients_collection.count_documents({
-                    "designer_uid": designer_uid
-                })
-                briefing = self.clients_collection.count_documents({
-                    "designer_uid": designer_uid,
-                    "briefing": True
-                })
-                pending = self.clients_collection.count_documents({
-                    "designer_uid": designer_uid,
-                    "briefing": False
-                })
+                payments = [
+                    {
+                        "id": transaction["transaction_id"][:8],
+                        "plan": transaction.get("plan"),
+                        "plan_name": self.plans.get(transaction.get("plan"), {}).get("name"),
+                        "amount": transaction.get("amount"),
+                        "status": transaction.get("status"),
+                        "created_at": transaction.get("created_at"),
+                        "approved_at": transaction.get("approved_at"),
+                        "refunded_at": transaction.get("refunded_at")
+                    }
+                    for transaction in transactions
+                ]
 
-                return jsonify({"clients": clients, "briefing": briefing, "pending": pending}), 200
+                return jsonify({"payments": payments}), 200
 
             except Exception:
                 return self.create_error_response('An error occurred while processing the request.', 500)

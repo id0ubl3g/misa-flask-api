@@ -195,7 +195,7 @@ docker compose ps
 | `POST`   | `/misa/refresh_token`                         | Generates a new access token using a valid refresh token.                               |
 | `POST`   | `/misa/logout`                                | Revokes the current access token and, when sent, the refresh token.                     |
 | `GET`    | `/misa/profile`                               | Returns the authenticated user's profile.                                               |
-| `GET`    | `/misa/metrics`                               | Returns client and briefing metrics for the authenticated designer.                     |
+| `GET`    | `/misa/payments`                              | Returns the payment history of the authenticated designer.                              |
 | `POST`   | `/misa/checkout`                              | Creates a Mercado Pago checkout for the selected subscription plan.                     |
 | `POST`   | `/misa/webhook`                               | Processes Mercado Pago payment notifications and updates the subscription status.       |
 
