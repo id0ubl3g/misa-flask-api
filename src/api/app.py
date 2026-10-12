@@ -1208,6 +1208,15 @@ class Server:
                 self.users_collection.delete_one({"uid": current_user})
                 self.revoke_token(get_jwt())
 
+                try:
+                    auth.delete_user(current_user)
+
+                except auth.UserNotFoundError:
+                    pass
+
+                except Exception:
+                    self.app.logger.exception("Failed to delete Firebase user %s", current_user)
+
                 return jsonify({"message": "Account deleted successfully."}), 200
 
             except Exception:
