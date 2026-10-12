@@ -196,6 +196,7 @@ docker compose ps
 | `POST`   | `/misa/logout`                                | Revokes the current access token and, when sent, the refresh token.                     |
 | `GET`    | `/misa/profile`                               | Returns the authenticated user's profile.                                               |
 | `GET`    | `/misa/payments`                              | Returns the payment history of the authenticated designer.                              |
+| `DELETE` | `/misa/account`                               | Deletes the authenticated account and its clients (requires `confirm_email`).           |
 | `POST`   | `/misa/checkout`                              | Creates a Mercado Pago checkout for the selected subscription plan.                     |
 | `POST`   | `/misa/webhook`                               | Processes Mercado Pago payment notifications and updates the subscription status.       |
 

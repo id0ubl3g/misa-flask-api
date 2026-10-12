@@ -148,7 +148,7 @@ class Server:
             endpoints_require = ['misa_briefing_create_client', 'misa_briefing_update_client',
                                 'misa_getall_client_responses', 'misa_get_client_response_by_token',
                                 'misa_delete_client_response_by_token', 'misa_profile', 
-                                'misa_payments', 'misa_refresh_token', 'misa_checkout']
+                                'misa_payments', 'misa_delete_account', 'misa_refresh_token', 'misa_checkout']
 
             if endpoint not in (endpoints_require):
                 return get_remote_address()
@@ -1174,6 +1174,41 @@ class Server:
                 ]
 
                 return jsonify({"payments": payments}), 200
+
+            except Exception:
+                return self.create_error_response('An error occurred while processing the request.', 500)
+
+        @self.app.route('/misa/account', methods=['DELETE'])
+        @self.limiter.limit("3 per minute")
+        @jwt_required()
+        def misa_delete_account() -> Response:
+            try:
+                current_user = self.user_or_ip()
+
+                if not current_user:
+                    return self.create_error_response("You are not authorized to access this resource", 401)
+
+                current_info_user = self.get_user(current_user)
+
+                if not current_info_user:
+                    return self.create_error_response("User not found", 404)
+
+                data = request.get_json(silent=True)
+                confirm_email = data.get("confirm_email") if isinstance(data, dict) else None
+
+                if not isinstance(confirm_email, str) or confirm_email.strip().lower() != (current_info_user.get("email") or "").lower():
+                    return self.create_error_response("Type your account email to confirm the deletion.", 400)
+
+                self.clients_collection.delete_many({"designer_uid": current_user})
+                self.usage_events_collection.delete_many({"uid": current_user})
+
+                anonymous_uid = "deleted-" + hashlib.sha256(current_user.encode("utf-8")).hexdigest()[:16]
+                self.transactions_collection.update_many({"uid": current_user}, {"$set": {"uid": anonymous_uid}})
+
+                self.users_collection.delete_one({"uid": current_user})
+                self.revoke_token(get_jwt())
+
+                return jsonify({"message": "Account deleted successfully."}), 200
 
             except Exception:
                 return self.create_error_response('An error occurred while processing the request.', 500)
