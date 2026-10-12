@@ -12,7 +12,7 @@ from config.providers.initialize_mercadopago import initialize_mercadopago, REVO
 
 from src.utils.system_utils import validate_user_data, is_valid_email
 
-from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token, jwt_required, get_jwt_identity, verify_jwt_in_request
+from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token, jwt_required, get_jwt_identity, get_jwt, decode_token, verify_jwt_in_request
 from flask import Flask, request, jsonify, Response
 from datetime import datetime, timezone, timedelta
 from flask_limiter.util import get_remote_address
@@ -56,6 +56,10 @@ class Server:
         
         self.redis_client = redis["redis_client"]
         self.limiter = redis["limiter"]
+
+        @self.jwt.token_in_blocklist_loader
+        def is_token_revoked(jwt_header: dict, jwt_payload: dict) -> bool:
+            return bool(self.redis_client.exists(f"revoked_token:{jwt_payload['jti']}"))
 
         self.mercadopago_sdk = mercadopago["mercadopago"]
         self.mercadopago_webhook_secret = mercadopago["webhook_secret"]
@@ -182,6 +186,12 @@ class Server:
         
         return None
 
+    def revoke_token(self, payload: dict) -> None:
+        ttl = int(payload["exp"] - datetime.now(timezone.utc).timestamp())
+
+        if ttl > 0:
+            self.redis_client.set(f"revoked_token:{payload['jti']}", 1, ex=ttl)
+
     def get_creation_quota(self, uid: str, plan: str | None, is_active: bool) -> dict:
         now = datetime.now(timezone.utc)
         quota = {}
@@ -299,7 +309,6 @@ class Server:
             return False
 
     def recompute_subscription(self, uid: str) -> dict:
-        # Rebuilds the subscription from the approved payments so a reversal removes exactly the period it paid for.
         approved_transactions = self.transactions_collection.find(
             {"uid": uid, "status": "approved"}
         ).sort("approved_at", 1)
@@ -1061,6 +1070,31 @@ class Server:
             except Exception:
                 return self.create_error_response('An error occurred while processing the request', 500)
 
+        @self.app.route('/misa/logout', methods=['POST'])
+        @self.limiter.limit("20 per minute")
+        @jwt_required()
+        def misa_logout() -> Response:
+            try:
+                self.revoke_token(get_jwt())
+
+                data = request.get_json(silent=True)
+                refresh_token = data.get("refresh_token") if isinstance(data, dict) else None
+
+                if isinstance(refresh_token, str) and refresh_token:
+                    try:
+                        refresh_payload = decode_token(refresh_token)
+
+                        if refresh_payload.get("type") == "refresh" and refresh_payload.get("sub") == get_jwt_identity():
+                            self.revoke_token(refresh_payload)
+
+                    except Exception:
+                        pass
+
+                return jsonify({"message": "Logged out successfully."}), 200
+
+            except Exception:
+                return self.create_error_response('An error occurred while processing the request.', 500)
+
         @self.app.route('/misa/profile', methods=['GET'])
         @self.limiter.limit("200 per minute")
         @jwt_required()
@@ -1279,7 +1313,6 @@ class Server:
         @self.app.route('/misa/webhook', methods=['POST'])
         def misa_webhook() -> Response:
             def ignore_notification(reason: str) -> Response:
-                # Mercado Pago retries any non-2xx response, so notifications that can never succeed are acknowledged.
                 self.app.logger.warning("Mercado Pago notification ignored: %s", reason)
                 return jsonify({"message": "Notification ignored", "reason": reason}), 200
 
@@ -1336,7 +1369,6 @@ class Server:
                 if status in REVOKING_STATUSES:
                     now = datetime.now(timezone.utc)
 
-                    # Only a payment that was approved granted days, so only that one may take them back.
                     revoked_transaction = self.transactions_collection.find_one_and_update(
                         {"transaction_id": transaction_id, "status": "approved"},
                         {
@@ -1399,7 +1431,6 @@ class Server:
                 if paid_price != expected_price:
                     return ignore_notification("Payment amount does not match the plan price")
 
-                # Atomic claim: concurrent or retried notifications for the same payment credit the plan only once.
                 approved_transaction = self.transactions_collection.find_one_and_update(
                     {"transaction_id": transaction_id, "status": "pending"},
                     {

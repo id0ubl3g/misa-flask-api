@@ -193,6 +193,7 @@ docker compose ps
 | `DELETE` | `/misa/delete_client_response/<token>`        | Deletes a client response using the client token.                                       |
 | `POST`   | `/misa/auth/google`                           | Authenticates a user through Firebase Google Authentication.                            |
 | `POST`   | `/misa/refresh_token`                         | Generates a new access token using a valid refresh token.                               |
+| `POST`   | `/misa/logout`                                | Revokes the current access token and, when sent, the refresh token.                     |
 | `GET`    | `/misa/profile`                               | Returns the authenticated user's profile.                                               |
 | `GET`    | `/misa/metrics`                               | Returns client and briefing metrics for the authenticated designer.                     |
 | `POST`   | `/misa/checkout`                              | Creates a Mercado Pago checkout for the selected subscription plan.                     |
