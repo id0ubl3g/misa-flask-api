@@ -52,6 +52,7 @@ class Server:
         self.clients_collection: Collection = mongo["clients_collection"]
         self.users_collection: Collection = mongo["users_collection"]
         self.transactions_collection = mongo["transactions_collection"]
+        self.usage_events_collection: Collection = mongo["usage_events_collection"]
         
         self.redis_client = redis["redis_client"]
         self.limiter = redis["limiter"]
@@ -181,16 +182,25 @@ class Server:
         
         return None
 
-    def get_dynamic_limit(self) -> str:
-        current_user = self.current_identity()
+    def get_creation_quota(self, uid: str, plan: str | None, is_active: bool) -> dict:
+        now = datetime.now(timezone.utc)
+        quota = {}
 
-        if not current_user or self.user_is_free(current_user):
-            return ABUSE_LIMIT
+        for window_name, window in QUOTA_WINDOWS.items():
+            limit = CREATION_QUOTAS.get(plan, {}).get(window_name, 0) if is_active else 0
+            window_filter = {"uid": uid, "type": "client_created", "created_at": {"$gte": now - window}}
 
-        user_info = self.get_user(current_user) or {}
-        plan = user_info.get("plan")
+            used = self.usage_events_collection.count_documents(window_filter)
+            oldest = self.usage_events_collection.find_one(window_filter, sort=[("created_at", 1)])
 
-        return PLAN_LIMITS.get(plan, ABUSE_LIMIT)
+            quota[window_name] = {
+                "used": used,
+                "limit": limit,
+                "remaining": max(0, limit - used),
+                "resets_at": (oldest["created_at"] + window).isoformat() if oldest else None
+            }
+
+        return quota
 
     def designer_is_active(self, designer_uid: str | None) -> bool:
         if not designer_uid:
@@ -327,11 +337,6 @@ class Server:
     def _register_routes(self) -> None:
         @self.app.errorhandler(429)
         def ratelimit_error(e) -> Response:
-            breached = getattr(self.limiter, "current_limit", None)
-
-            if request.endpoint == "misa_briefing_create_client" and breached and "month" in str(breached.limit):
-                return self.create_error_response("Monthly client creation quota reached for your plan. Upgrade your plan to continue using this feature.", 429)
-
             current_user = self.current_identity()
 
             response_check_and_apply_block = self.check_and_apply_block(current_user)
@@ -348,7 +353,6 @@ class Server:
         
         @self.app.route('/misa/briefing/create_client', methods=['POST'])
         @self.limiter.limit(ABUSE_LIMIT, scope="abuse")
-        @self.limiter.limit(self.get_dynamic_limit, deduct_when=lambda response: response.status_code == 201)
         @jwt_required()
         def misa_briefing_create_client() -> Response:
             try:
@@ -369,6 +373,15 @@ class Server:
 
                 if not allowed:
                     return self.create_error_response(f"Client creation blocked. Limit reached ({current_count}/{max_limit}).", 403)
+
+                quota = self.get_creation_quota(current_user, current_info_user.get("plan"), True)
+
+                for window_name, window_quota in quota.items():
+                    if window_quota["remaining"] <= 0:
+                        return jsonify({
+                            "error": f"{window_name.capitalize()} client creation quota reached ({window_quota['used']}/{window_quota['limit']}). It resets at {window_quota['resets_at']}.",
+                            "quota": quota
+                        }), 429
 
                 data = request.get_json()
 
@@ -443,6 +456,13 @@ class Server:
                 except DuplicateKeyError:
                     return self.create_error_response('A client with this email already exists.', 400)
 
+                self.usage_events_collection.insert_one({
+                    "uid": current_user,
+                    "type": "client_created",
+                    "token": client_data["token"],
+                    "created_at": client_data["created_at"]
+                })
+
                 return jsonify({
                     "message": "Client created successfully. Ready to start the brand briefing.",
                     "token": client_data["token"],
@@ -450,7 +470,8 @@ class Server:
                         "current_count": current_count + 1,
                         "max_limit": max_limit,
                         "remaining": max_limit - (current_count + 1)
-                    }
+                    },
+                    "quota": self.get_creation_quota(current_user, current_info_user.get("plan"), True)
                 }), 201
                 
             except Exception:
@@ -1074,7 +1095,8 @@ class Server:
                         "current_count": current_count,
                         "max_limit": max_limit,
                         "remaining": max(0, max_limit - current_count)
-                    }
+                    },
+                    "quota": self.get_creation_quota(current_user, current_info_user.get("plan"), not is_free)
                 }), 200
 
             except Exception:
