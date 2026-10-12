@@ -15,7 +15,7 @@ def parse_ai_json(text: str) -> dict:
 
 def is_valid_email(email: str) -> bool:
     try:
-        validate_email(email)
+        validate_email(email, check_deliverability=False)
         return True
     
     except EmailNotValidError:
