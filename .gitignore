@@ -29,3 +29,5 @@ tests/
 
 # Json files
 *.json
+# Local compose overrides
+docker-compose.override.yml
