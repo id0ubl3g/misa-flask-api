@@ -5,6 +5,7 @@ load_dotenv()
 add_project_root_to_path()
 
 from src.modules.vertex_ai import Vertex
+from src.modules.open_ai import OpenAIChat, AIServiceUnavailableError
 
 from config.prompt_config import prompt_questions_personalized, prompt_generate_briefing
 from config.providers.initialize_mongodb import initialize_mongodb
@@ -12,24 +13,47 @@ from config.providers.initialize_mongodb import initialize_mongodb
 from src.rabbitmq.connection import get_connection, declare_briefing_queue, BRIEFING_QUEUE
 from src.utils.system_utils import parse_ai_json, create_google_credentials
 
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 from pika.exceptions import AMQPConnectionError, AMQPChannelError
 from datetime import datetime, timezone
 import traceback
 import time
 import json
+import os
 
 QUESTION_KEYS = [f"question {i}" for i in range(1, 6)]
+
+AI_UNAVAILABLE_ERROR = "The briefing service is temporarily unavailable. Please try again later."
+AI_FAILED_ERROR = "The AI could not process this briefing. Please submit your answers again."
+
+AI_PROVIDERS = {
+    "gemini": Vertex,
+    "openai": OpenAIChat,
+}
+
+def create_ai_client():
+    provider = (os.getenv("AI_PROVIDER") or "gemini").strip().lower()
+
+    if provider not in AI_PROVIDERS:
+        raise ValueError(f"Unknown AI_PROVIDER '{provider}'. Use one of: {', '.join(AI_PROVIDERS)}")
+
+    print(f"message: Using AI provider {provider}")
+    return AI_PROVIDERS[provider]()
 
 class BriefingWorker:
     def __init__(self) -> None:
         mongo = initialize_mongodb()
         self.clients_collection = mongo["clients_collection"]
-        self.vertex = Vertex()
+        self.ai = create_ai_client()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, max=30), reraise=True)
+    @retry(
+        retry=retry_if_not_exception_type(AIServiceUnavailableError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, max=30),
+        reraise=True
+    )
     def generate(self, prompt: str) -> dict:
-        response = self.vertex.start_chat(prompt)
+        response = self.ai.start_chat(prompt)
         return parse_ai_json(response["data"])
 
     def validate_personalized_questions(self, questions: dict) -> None:
@@ -133,22 +157,30 @@ class BriefingWorker:
             print(f"message: {stage} job for {token} processed successfully")
             ch.basic_ack(delivery_tag=method.delivery_tag)
 
+        except AIServiceUnavailableError as error:
+            print(f"ERROR: AI provider unavailable, {stage} job for {token} failed: {error}")
+            self.mark_failed(token, stage, AI_UNAVAILABLE_ERROR)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
         except Exception:
             traceback.print_exc()
-
-            if token and stage:
-                self.clients_collection.update_one(
-                    {"token": token, "job_stage": stage},
-                    {
-                        "$set": {
-                            "job_status": "failed",
-                            "job_error": "The AI could not process this briefing. Please submit your answers again.",
-                            "job_updated_at": datetime.now(timezone.utc)
-                        }
-                    }
-                )
-
+            self.mark_failed(token, stage, AI_FAILED_ERROR)
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+    def mark_failed(self, token: str | None, stage: str | None, message: str) -> None:
+        if not (token and stage):
+            return
+
+        self.clients_collection.update_one(
+            {"token": token, "job_stage": stage},
+            {
+                "$set": {
+                    "job_status": "failed",
+                    "job_error": message,
+                    "job_updated_at": datetime.now(timezone.utc)
+                }
+            }
+        )
 
     def execute(self) -> None:
         while True:
