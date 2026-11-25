@@ -24,6 +24,7 @@
 * [Install Docker](#install-docker)
 * [Environment Configuration](#environment-configuration)
 * [Running the Application](#running-the-application)
+* [Production Deployment](#production-deployment)
 * [API Documentation](#api-documentation)
   * [Endpoints](#endpoints)
   * [Core Endpoints](#core-endpoints)
@@ -42,16 +43,17 @@ The Misa Flask API is a web application developed with Flask, designed to genera
 * AI-powered brand identity briefing generation
 * Adaptive questionnaires for clients
 * Initial and personalized questionnaire flows
+* Selectable AI provider: OpenAI or Google Gemini (Vertex AI)
 * JWT-based authentication
 * Client management
-* MongoDB Atlas-based data persistence
-* Redis Cloud caching and rate limiting
+* MongoDB data persistence (self-hosted container)
+* Redis caching and rate limiting (self-hosted container)
 * Firebase authentication
 * Google authentication
 * Mercado Pago subscription integration
 * RabbitMQ queue and worker for asynchronous AI briefing generation
 * Docker and Docker Compose support
-* Metrics and client briefing statistics
+* Automatic HTTPS in production through Caddy
 
 ## Project Structure
 
@@ -73,6 +75,7 @@ The Misa Flask API is a web application developed with Flask, designed to genera
     │   ├── api/
     │   │   └── app.py
     │   ├── modules/
+    │   │   ├── open_ai.py
     │   │   └── vertex_ai.py
     │   ├── rabbitmq/
     │   │   ├── connection.py
@@ -85,30 +88,36 @@ The Misa Flask API is a web application developed with Flask, designed to genera
     ├── .dockerignore
     ├── .env.example
     ├── .gitignore
+    ├── Caddyfile
     ├── docker-compose.yml
     ├── Dockerfile
     ├── LICENSE
+    ├── Makefile
     ├── README.md
     ├── requirements.txt
-    ├── run.py
+    └── run.py
 ```
 
 ## Prerequisites
 
-To run the Misa Flask API, use a Linux environment with Python 3.10 or higher. The environment must include Docker and Docker Compose for containerized services, as well as internet access for external services such as Redis Cloud, MongoDB Atlas, Firebase, Google Cloud, Mercado Pago, and generative AI services.
+To run the Misa Flask API, use a Linux environment with Docker and Docker Compose. MongoDB, Redis and RabbitMQ run as containers alongside the API, so no external database is needed. Internet access is required for the external services:
 
-The application also requires:
-
-* Docker
-* Docker Compose
-* Redis Cloud connection
-* A MongoDB Atlas connection
+* Firebase (Google sign-in)
+* Mercado Pago (subscriptions)
+* OpenAI API, or Google Cloud Vertex AI when `AI_PROVIDER=gemini`
 
 ### Install Docker
 
-Follow the official Docker installation guide:
+On Ubuntu or Debian, install Docker and the Compose plugin with the official script, then allow your user to run it without `sudo`:
 
-[https://docs.docker.com/engine/install/](https://docs.docker.com/engine/install/)
+```sh
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker $USER
+newgrp docker
+docker --version && docker compose version
+```
+
+For other systems, follow the official guide: [https://docs.docker.com/engine/install/](https://docs.docker.com/engine/install/)
 
 ## Environment Configuration
 
@@ -118,19 +127,29 @@ Create the environment file from the provided example:
 cp .env.example .env
 ```
 
-Configure the required environment variables in `.env`, including:
+Configure the required environment variables in `.env`:
 
-* Flask secret keys
-* JWT configuration
-* MongoDB connection
-* Redis Cloud configuration
-* Google Cloud credentials
-* Mercado Pago credentials
-* Application base URLs
+| Variable | Description |
+| --- | --- |
+| `JWT_SECRET_KEY` | Secret used to sign the API access and refresh tokens. |
+| `MONGO_ROOT_USER`, `MONGO_ROOT_PASS` | Credentials of the MongoDB container. Created on the first start. |
+| `REDIS_PASSWORD` | Password of the Redis container. `REDIS_USERNAME` stays `default`. |
+| `RABBITMQ_USER`, `RABBITMQ_PASS`, `RABBITMQ_ERLANG_COOKIE` | Credentials of the RabbitMQ container. Created on the first start. |
+| `AI_PROVIDER` | `openai` or `gemini` (default `gemini`). |
+| `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI credentials and model (default `gpt-5-mini`). Required when `AI_PROVIDER=openai`. |
+| `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` | Vertex AI project and region. Only used when `AI_PROVIDER=gemini`. |
+| `MERCADOPAGO_SECRET_KEY` | Mercado Pago access token. |
+| `MERCADOPAGO_WEBHOOK_SECRET` | Mercado Pago webhook signature secret, from the same application as the access token. |
+| `CORS_ORIGINS` | Comma-separated allowed origins. Empty allows all origins. |
+| `API_DOMAIN` | Public domain of the API in production, for example `api.example.com`. |
+
+Use long random values for the passwords and secrets, for example generated with `openssl rand -hex 24`. Since the MongoDB and Redis connection strings are built by Docker Compose, use hexadecimal passwords so they need no URL escaping.
 
 Sensitive credentials should not be committed to the repository.
 
-To enable the Vertex AI and Firebase features, configure the Google Cloud service account credentials through the `.env` file.
+When the OpenAI key runs out of credits or is revoked, the worker stops retrying and marks the job as `failed` with the message `The briefing service is temporarily unavailable. Please try again later.`, so the client can submit the answers again once the account is fixed.
+
+Firebase sign-in requires the Google service account credentials in the `.env` file. Vertex AI uses the same credentials when `AI_PROVIDER=gemini`.
 
 The Google credentials JSON file is now generated dynamically when the application starts, so you do not need to manually place `google_credentials.json` inside the `config/` directory.
 
@@ -164,10 +183,19 @@ cd misa-flask-api
 Start the application and its dependencies with Docker Compose:
 
 ```sh
-docker compose up -d --build
+make run
 ```
 
-This starts the API, the RabbitMQ broker and the briefing worker. Set `RABBITMQ_USER` and `RABBITMQ_PASS` in `.env` before the first start, since RabbitMQ creates its user from them.
+This starts the API, the briefing worker, MongoDB, Redis and RabbitMQ. The API listens on `http://127.0.0.1:5000`, and the databases are only reachable inside the Docker network. Set the MongoDB, Redis and RabbitMQ credentials in `.env` before the first start, since the containers create their users from them.
+
+Other useful commands:
+
+| Command | Description |
+| --- | --- |
+| `make restart` | Rebuilds and restarts the API and the worker. |
+| `make logs` | Follows the API and worker logs. |
+| `make stop` | Stops all containers. Data is kept in Docker volumes. |
+| `make backup` | Saves a compressed MongoDB dump in `backups/`. |
 
 The briefing generation runs in the worker: `ping_client_response` and `pong_client_response` return `202` and the client polls `/misa/briefing/status/<token>` until `status` is `done` (or `failed`, in which case the answers can be submitted again).
 
@@ -175,6 +203,39 @@ To check the running containers:
 
 ```sh
 docker compose ps
+```
+
+## Production Deployment
+
+In production, everything runs on a single server with Docker Compose. Caddy sits in front of the API as a reverse proxy and issues the HTTPS certificate automatically.
+
+1. Point a DNS `A` record for the API domain (for example `api.example.com`) to the server IP.
+2. Open the HTTP and HTTPS ports on the server firewall:
+
+   ```sh
+   sudo ufw allow 22 && sudo ufw allow 80 && sudo ufw allow 443 && sudo ufw enable
+   ```
+
+3. Clone the repository, copy the `.env` file to the server and set `API_DOMAIN` to the API domain.
+4. Start the stack with the production profile, which also starts Caddy:
+
+   ```sh
+   make deploy
+   curl https://api.example.com/health
+   ```
+
+5. In the Mercado Pago panel, set the webhook URL to `https://api.example.com/misa/webhook` with the payments event. The "Simulate notification" button should get a `400` (the simulated payment does not exist); a `401` means `MERCADOPAGO_WEBHOOK_SECRET` belongs to another application.
+6. In the Firebase console, add the frontend domain under Authentication > Settings > Authorized domains.
+7. Schedule a daily MongoDB backup with `crontab -e`, keeping the last 14 days:
+
+   ```cron
+   0 3 * * * cd ~/misa-flask-api && make backup && find backups -mtime +14 -delete
+   ```
+
+To update the server after new commits:
+
+```sh
+git pull && make deploy
 ```
 
 ## API Documentation
