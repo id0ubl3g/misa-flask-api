@@ -16,6 +16,7 @@ from flask_jwt_extended import JWTManager, create_access_token, create_refresh_t
 from flask import Flask, request, jsonify, Response
 from datetime import datetime, timezone, timedelta
 from flask_limiter.util import get_remote_address
+from werkzeug.middleware.proxy_fix import ProxyFix
 from pymongo.errors import DuplicateKeyError
 from pymongo.collection import Collection
 from pymongo import ReturnDocument
@@ -35,6 +36,8 @@ load_dotenv()
 class Server:
     def __init__(self) -> None:
         self.app: Flask = Flask(__name__)
+        # Behind exactly one reverse proxy (Caddy): trust its X-Forwarded-* so rate limits see the real client IP.
+        self.app.wsgi_app = ProxyFix(self.app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
         self.app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
         self.app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)

@@ -31,3 +31,5 @@ tests/
 *.json
 # Local compose overrides
 docker-compose.override.yml
+# Database backups
+backups/
